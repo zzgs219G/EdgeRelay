@@ -144,53 +144,24 @@
             type="number"
             :placeholder="f.placeholder"
           />
-          <!-- 敏感字段：有值且未编辑时展示掩码 + 眼睛按钮（可查看原文复制）；
-               一旦开始输入就切到普通输入框，走「改新值」的语义。 -->
-          <template v-else-if="f.secret">
-            <div v-if="secretMeta[f.key]?.set && !editingSecret[f.key]" class="secret-row">
-              <span class="secret-mask font-mono">
-                {{ revealed[f.key] || secretMeta[f.key].masked }}
-              </span>
-              <button
-                class="secret-btn"
-                :title="revealed[f.key] ? '隐藏' : '查看并可复制（需密码）'"
-                :disabled="revealing === f.key"
-                @click="onToggleReveal(f.key)"
-              >
-                <i
-                  :class="revealed[f.key] ? 'ri-eye-off-line' : 'ri-eye-line'"
-                  :style="{ opacity: revealing === f.key ? 0.4 : 1 }"
-                />
-              </button>
-              <button
-                class="secret-btn"
-                :title="revealed[f.key] ? '复制' : '先点眼睛查看再复制'"
-                :disabled="!revealed[f.key]"
-                @click="onCopy(f.key)"
-              >
-                <i class="ri-file-copy-line" />
-              </button>
-              <button class="secret-btn" title="改为新值" @click="startEditSecret(f.key)">
-                <i class="ri-pencil-line" />
-              </button>
-            </div>
-
-            <template v-else>
-              <el-input
-                v-model="form[f.key]"
-                type="password"
-                show-password
-                :placeholder="secretMeta[f.key]?.set ? '输入新值以覆盖' : f.placeholder"
+          <!-- 敏感字段：直接给明文，可直接编辑、选中、复制。
+               show-password 提供小眼睛在「圆点/明文」间切换。
+               不再额外加"查看/改新值"按钮——进到编辑页就是为了改它，
+               多一层只会让人多点两下。 -->
+          <el-input
+            v-else-if="f.secret"
+            v-model="form[f.key]"
+            :type="isRevealed(f.key) ? 'text' : 'password'"
+            :placeholder="f.placeholder"
+          >
+            <template #suffix>
+              <i
+                class="cursor-pointer text-slate-400"
+                :class="isRevealed(f.key) ? 'ri-eye-off-line' : 'ri-eye-line'"
+                @click="toggleReveal(f.key)"
               />
-              <button
-                v-if="secretMeta[f.key]?.set && editingSecret[f.key]"
-                class="text-[11px] text-slate-400 mt-1.5 active:text-slate-600"
-                @click="cancelEditSecret(f.key)"
-              >
-                取消修改
-              </button>
             </template>
-          </template>
+          </el-input>
 
           <el-input v-else v-model="form[f.key]" :placeholder="f.placeholder" />
 
@@ -199,23 +170,6 @@
           </p>
         </div>
 
-        <!-- 当前密码：只要本卡片含敏感字段就需要（查看原文、改值都要它）。
-             一直显示而不是按 dirty 隐藏，否则用户点"眼睛"时找不到输入框。 -->
-        <div v-if="activeCardHasSecret" class="pt-3 border-t border-slate-100">
-          <label class="block text-xs font-bold text-slate-500 mb-1.5">
-            当前密码
-            <span v-if="editorNeedsPassword" class="text-red-500">*</span>
-          </label>
-          <el-input
-            v-model="currentPassword"
-            type="password"
-            show-password
-            placeholder="查看或修改凭证都需要验证"
-          />
-          <p class="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
-            防止会话被他人拿到后读走或改掉凭证。CF secret 中的旧密码始终有效，可作应急入口。
-          </p>
-        </div>
       </div>
 
       <template #footer>
@@ -262,12 +216,16 @@ const errorMsg = ref('')
 const savedHint = ref('')
 const editorOpen = ref(false)
 const activeCardKey = ref('')
-const currentPassword = ref('')
-/** 哪些敏感字段正处于「输入新值」模式 */
-const editingSecret = reactive({})
-/** 已揭示的明文字段（仅在内存，关闭弹窗即清空） */
+/** 哪些敏感字段当前显示明文（眼睛状态）。纯 UI 状态，不涉及请求。 */
 const revealed = reactive({})
-const revealing = ref('')
+
+function isRevealed(key) {
+  return revealed[key] === true
+}
+
+function toggleReveal(key) {
+  revealed[key] = !revealed[key]
+}
 
 /** 每个敏感字段的状态（是否设置过 + 遮蔽值），永不含明文。 */
 const secretMeta = reactive({
@@ -477,25 +435,8 @@ const cards = computed(() =>
 /** 当前卡片内是否有改动（仅与 baseline 比对本卡片字段）。 */
 const editorDirty = computed(() => {
   if (!activeCard.value || !baseline) return false
-  return activeCard.value.fields.some((f) => {
-    const v = form[f.key]
-    if (f.secret) return String(v ?? '') !== ''
-    return String(v ?? '') !== String(baseline[f.key] ?? '')
-  })
-})
-
-// 注意：revealed（查看原文）不算改动——它只是读取，不写回 KV。
-
-/** 本卡片是否包含敏感字段（决定要不要显示密码框）。 */
-const activeCardHasSecret = computed(
-  () => !!activeCard.value?.fields.some((f) => f.secret)
-)
-
-/** 是否已输入新值（决定密码框是否标必填）。 */
-const editorNeedsPassword = computed(() => {
-  if (!activeCard.value || !baseline) return false
   return activeCard.value.fields.some(
-    (f) => f.secret && String(form[f.key] ?? '') !== ''
+    (f) => String(form[f.key] ?? '') !== String(baseline[f.key] ?? '')
   )
 })
 
@@ -510,15 +451,24 @@ function applyConfig(data) {
   form.job_retention_days = data.config.job_retention_days ?? 7
   form.run_id_wait_ms = data.config.run_id_wait_ms ?? 4000
 
+  // 敏感字段：明文直接填充到编辑框（后端已在 GET 里返回），
+  // 掩码只用于摘要卡片展示。
   for (const k of ['github_token', 'relay_token', 'relay_password', 'r2_access_key_id', 'r2_secret_access_key']) {
     secretMeta[k] = {
       set: data.config[`${k}_set`] === true,
       masked: data.config[`${k}_masked`] || '',
     }
-    form[k] = ''
+    form[k] = data.config[k] || ''
   }
 
   baseline = {
+    // 敏感字段也要进 baseline：现在 form 里是明文，
+    // 不记录基线的话每个敏感字段都会被判成"改过了"。
+    github_token: form.github_token,
+    relay_token: form.relay_token,
+    relay_password: form.relay_password,
+    r2_access_key_id: form.r2_access_key_id,
+    r2_secret_access_key: form.r2_secret_access_key,
     github_owner: form.github_owner,
     github_repo: form.github_repo,
     github_ref: form.github_ref,
@@ -551,68 +501,17 @@ function openEditor(key) {
     return
   }
   activeCardKey.value = key
-  currentPassword.value = ''
   editorOpen.value = true
-}
-
-function startEditSecret(key) {
-  editingSecret[key] = true
-  form[key] = ''
-}
-
-function cancelEditSecret(key) {
-  editingSecret[key] = false
-  form[key] = ''
-  delete revealed[key]
-}
-
-/**
- * 切换明文的显示状态。
- *
- * 显示需要当前密码——GET /api/config 只回掩码，明文单独按字段取。
- * 这样「自己能看能复制」与「cookie 泄漏不等于凭证泄漏」两者兼得：
- * 后者只能改、不能读走。
- */
-async function onToggleReveal(key) {
-  if (revealed[key]) {
-    delete revealed[key]
-    return
-  }
-  if (!currentPassword.value) {
-    ElMessage.warning('请先在下方填写当前密码')
-    return
-  }
-  revealing.value = key
-  try {
-    const r = await api.revealConfig(key, currentPassword.value)
-    revealed[key] = r.value
-  } catch (e) {
-    ElMessage.error(e.message || '验证失败')
-  } finally {
-    revealing.value = ''
-  }
-}
-
-async function onCopy(key) {
-  const v = revealed[key]
-  if (!v) return
-  try {
-    await navigator.clipboard.writeText(v)
-    ElMessage.success('已复制')
-  } catch {
-    ElMessage.error('复制失败，请手动选择文本')
-  }
 }
 
 function onEditorClosed() {
   activeCardKey.value = ''
-  currentPassword.value = ''
-  // 关闭时回滚未保存的敏感输入，并**清空已揭示的明文**——
-  // 明文只该在本次编辑会话内存在，不能留在内存里等下次打开。
+  // 眼睛状态复位：下次打开默认隐藏
+  for (const k of Object.keys(revealed)) delete revealed[k]
+  // 回滚未保存的编辑（form 会被下一次 applyConfig 覆盖，
+  // 但这里先清掉敏感项，避免明文短暂滞留）
   for (const k of ['github_token', 'relay_token', 'relay_password', 'r2_access_key_id', 'r2_secret_access_key']) {
     form[k] = ''
-    delete revealed[k]
-    editingSecret[k] = false
   }
 }
 
@@ -630,8 +529,12 @@ async function onSave() {
 
   const values = {}
   for (const f of activeCard.value.fields) {
+    // 敏感字段现在也是明文在编辑框里，同样做值比对：
+    // 没改就不提交，避免把未变的令牌重复写进 KV。
     if (f.secret) {
-      if (form[f.key]) values[f.key] = form[f.key]
+      if (String(form[f.key] ?? '') !== String(baseline[f.key] ?? '')) {
+        values[f.key] = form[f.key]
+      }
       continue
     }
     if (f.type === 'number') {
@@ -652,9 +555,7 @@ async function onSave() {
   saving.value = true
   errorMsg.value = ''
   try {
-    const body = { values }
-    if (currentPassword.value) body.current_password = currentPassword.value
-    const data = await api.patchConfig(body)
+    const data = await api.patchConfig({ values })
     applyConfig(data)
     editorOpen.value = false
     savedHint.value = '已保存并生效'
@@ -801,49 +702,6 @@ onMounted(load)
   justify-content: space-between;
   padding: 9px 14px;
   border-top: 1px solid rgba(148, 163, 184, 0.12);
-}
-
-/* 敏感字段的掩码展示行 */
-.secret-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0 4px 0 11px;
-  min-height: 40px;
-  border-radius: 10px;
-  background: #f8fafc;
-  box-shadow: 0 0 0 1px #ebeef5 inset;
-}
-.secret-mask {
-  flex: 1;
-  min-width: 0;
-  font-size: 13px;
-  color: #334155;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  user-select: all;
-}
-.secret-btn {
-  width: 32px;
-  height: 32px;
-  flex-shrink: 0;
-  display: grid;
-  place-items: center;
-  border: none;
-  background: transparent;
-  color: #94a3b8;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-.secret-btn:active:not(:disabled) {
-  background: #e2e8f0;
-  color: #334155;
-}
-.secret-btn:disabled {
-  opacity: 0.35;
-  cursor: default;
 }
 
 /* 弹窗宽度：手机上不要顶满 */

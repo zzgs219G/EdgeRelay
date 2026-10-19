@@ -20,7 +20,7 @@ import {
   SESSION_COOKIE_NAME,
 } from "./ui";
 import { handleListJobs } from "./jobs";
-import { handleGetConfig, handlePatchConfig, handleRevealConfig } from "./config_api";
+import { handleGetConfig, handlePatchConfig } from "./config_api";
 import { handlePresign } from "./r2_presign";
 import { handleStatusSteps } from "./status_steps";
 import { loadConfig, resolveEnv, type ResolvedEnv } from "./config";
@@ -142,10 +142,6 @@ export default {
 
         case url.pathname === "/api/config" && request.method === "PATCH":
           return await handlePatchConfig(request, cfg);
-
-        // 按需查看单个敏感字段明文：需当前密码，不批量、不缓存
-        case url.pathname === "/api/config/reveal" && request.method === "POST":
-          return await handleRevealConfig(request, cfg);
 
         default:
           // 只有 /api/* 会走到这里（其它 GET 已在上面交给 assets）。

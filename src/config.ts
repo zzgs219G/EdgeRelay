@@ -214,10 +214,20 @@ export async function describeConfig(
   const sources: Record<string, string> = {};
   const config: Record<string, unknown> = {};
 
+  /**
+   * 敏感字段同时返回明文与掩码。
+   *
+   * 为什么直接给明文：能进这个接口的已经持有有效会话，而他能改就等于
+   * 能让网关用别的凭证——把"读"额外设一道门槛挡不住真正的风险，
+   * 只是让「查看/复制自己的 key」这件正常操作变麻烦。
+   * 密码本身是唯一防线，那就在登录处把住即可。
+   *
+   * `_masked` 仍返回，供摘要卡片直接展示，省得前端重复实现掩码规则。
+   */
   const secretOrPlain = (field: ConfigField, effective: string | undefined, kvHas: boolean) => {
     sources[field] = kvHas ? "kv" : effective ? "env" : "unset";
     if (isSecretField(field)) {
-      config[field] = undefined; // 占位，下面统一处理
+      (config as Record<string, unknown>)[field] = effective ?? "";
       (config as Record<string, unknown>)[`${field}_set`] = Boolean(effective);
       (config as Record<string, unknown>)[`${field}_masked`] = maskSecret(effective);
     } else {
@@ -244,9 +254,6 @@ export async function describeConfig(
   sources.rate_limit_per_min = kvCfg.rate_limit_per_min !== undefined ? "kv" : "env";
   sources.job_retention_days = kvCfg.job_retention_days !== undefined ? "kv" : "env";
   sources.run_id_wait_ms = kvCfg.run_id_wait_ms !== undefined ? "kv" : "env";
-
-  // 清掉占位 key
-  for (const f of SECRET_FIELDS) delete config[f];
 
   return { config, sources };
 }

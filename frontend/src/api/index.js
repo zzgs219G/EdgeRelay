@@ -83,21 +83,13 @@ export const api = {
     return request(`/api/jobs?limit=${limit}`)
   },
 
-  /** 运行时配置（敏感字段只返回遮蔽值）。 */
+  /** 运行时配置。敏感字段返回明文 + 掩码（掩码仅供摘要卡片展示）。 */
   getConfig() {
     return request('/api/config')
   },
 
-  /** 部分更新配置。改敏感字段必须带 current_password。 */
+  /** 部分更新配置。 */
   patchConfig(body) {
     return request('/api/config', { method: 'PATCH', body })
-  },
-
-  /** 查看单个敏感字段明文。必须带当前密码，且一次只能一个字段。 */
-  revealConfig(field, currentPassword) {
-    return request('/api/config/reveal', {
-      method: 'POST',
-      body: { field, current_password: currentPassword },
-    })
   },
 }

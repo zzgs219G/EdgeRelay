@@ -68,7 +68,10 @@ describe("GET /api/config", () => {
     expect(resp.status).toBe(401);
   });
 
-  it("never returns plaintext secrets", async () => {
+  it("returns plaintext secrets alongside masks", async () => {
+    // 早期版本遮蔽明文，被判定为过度设计：能进面板就说明已登录，
+    // 而"能改"本身意味着能让网关用任意凭证，给"读"再加门槛挡不住
+    // 实质风险，只让「查看/复制自己的 key」变麻烦。
     const resp = await worker.fetch(
       req("/api/config", {}, AUTH),
       freshEnv(),
@@ -80,17 +83,13 @@ describe("GET /api/config", () => {
       sources: Record<string, string>;
     };
 
-    // 明文绝不能出现
-    const raw = JSON.stringify(body);
-    expect(raw).not.toContain("env-github-token");
-    expect(raw).not.toContain("env-relay-token");
-    expect(raw).not.toContain("env-password");
+    // 明文可读，便于用户复制
+    expect(body.config.github_token).toBe("env-github-token");
+    expect(body.config.relay_token).toBe("env-relay-token");
 
-    // 敏感字段只给 set 标记与遮蔽值
+    // 掩码仍然提供，供摘要卡片直接展示
     expect(body.config.github_token_set).toBe(true);
-    expect(typeof body.config.github_token_masked).toBe("string");
-    expect(body.config.github_token_masked).toContain("*");
-    expect(body.config).not.toHaveProperty("github_token");
+    expect(body.config.github_token_masked).toBe("env-******oken");
   });
 
   it("reports non-secret values and where they come from", async () => {
@@ -162,55 +161,15 @@ describe("PATCH /api/config", () => {
     expect(body.error).toContain("未知配置项");
   });
 
-  it("refuses to change a secret without current_password", async () => {
+  it("updates a secret without requiring a password", async () => {
+    // 进面板已登录，改凭证不再二次验证——密码是唯一防线，在登录处把住。
     const resp = await worker.fetch(
       req(
         "/api/config",
         {
           method: "PATCH",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ values: { github_token: "new-token" } }),
-        },
-        AUTH,
-      ),
-      freshEnv(),
-      {} as ExecutionContext,
-    );
-    expect(resp.status).toBe(403);
-    expect((await resp.json() as { error: string }).error).toContain("current_password");
-  });
-
-  it("refuses a wrong current_password", async () => {
-    const resp = await worker.fetch(
-      req(
-        "/api/config",
-        {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            values: { github_token: "new-token" },
-            current_password: "wrong",
-          }),
-        },
-        AUTH,
-      ),
-      freshEnv(),
-      {} as ExecutionContext,
-    );
-    expect(resp.status).toBe(403);
-  });
-
-  it("accepts a secret change with the right current_password", async () => {
-    const resp = await worker.fetch(
-      req(
-        "/api/config",
-        {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            values: { github_token: "new-github-token-value" },
-            current_password: "env-password",
-          }),
+          body: JSON.stringify({ values: { github_token: "new-github-token-value" } }),
         },
         AUTH,
       ),
@@ -218,11 +177,12 @@ describe("PATCH /api/config", () => {
       {} as ExecutionContext,
     );
     expect(resp.status).toBe(200);
-    const body = (await resp.json()) as { config: Record<string, unknown>; sources: Record<string, string> };
+    const body = (await resp.json()) as {
+      config: Record<string, unknown>;
+      sources: Record<string, string>;
+    };
     expect(body.sources.github_token).toBe("kv");
-    expect(body.config.github_token_set).toBe(true);
-    // 回显的遮蔽值必须来自新值，且不含完整明文
-    expect(JSON.stringify(body)).not.toContain("new-github-token-value");
+    expect(body.config.github_token).toBe("new-github-token-value");
   });
 
   it("clears an override with an empty string, falling back to env", async () => {
@@ -310,7 +270,6 @@ describe("escape hatch: env password stays valid after KV override", () => {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             values: { relay_password: "panel-new-password" },
-            current_password: "env-password",
           }),
         },
         AUTH,
@@ -356,7 +315,6 @@ describe("escape hatch: env password stays valid after KV override", () => {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             values: { relay_token: "panel-new-token" },
-            current_password: "env-password",
           }),
         },
         AUTH,
@@ -382,106 +340,6 @@ describe("escape hatch: env password stays valid after KV override", () => {
       {} as ExecutionContext,
     );
     expect(withOld.status).toBe(200);
-  });
-});
-
-describe("POST /api/config/reveal — 按需查看明文", () => {
-  const REVEAL_AUTH = { authorization: "Bearer env-relay-token" };
-
-  function revealReq(body: unknown, headers: Record<string, string> = REVEAL_AUTH): Request {
-    return new Request("https://edge-relay.test/api/config/reveal", {
-      method: "POST",
-      headers: { "content-type": "application/json", ...headers },
-      body: JSON.stringify(body),
-    });
-  }
-
-  it("requires auth", async () => {
-    const resp = await worker.fetch(
-      revealReq({ field: "github_token", current_password: "env-password" }, {}),
-      freshEnv(),
-      {} as ExecutionContext,
-    );
-    expect(resp.status).toBe(401);
-  });
-
-  it("returns 403 without the current password", async () => {
-    // 关键安全边界：光有 session/令牌不足以读明文
-    const resp = await worker.fetch(
-      revealReq({ field: "github_token" }),
-      freshEnv(),
-      {} as ExecutionContext,
-    );
-    expect(resp.status).toBe(403);
-  });
-
-  it("returns 403 with a wrong password", async () => {
-    const resp = await worker.fetch(
-      revealReq({ field: "github_token", current_password: "nope" }),
-      freshEnv(),
-      {} as ExecutionContext,
-    );
-    expect(resp.status).toBe(403);
-  });
-
-  it("returns the plaintext for one field with the right password", async () => {
-    const resp = await worker.fetch(
-      revealReq({ field: "github_token", current_password: "env-password" }),
-      freshEnv(),
-      {} as ExecutionContext,
-    );
-    expect(resp.status).toBe(200);
-    const body = (await resp.json()) as { ok: boolean; field: string; value: string };
-    expect(body.ok).toBe(true);
-    expect(body.field).toBe("github_token");
-    expect(body.value).toBe("env-github-token");
-  });
-
-  it("refuses non-secret fields — no batch dump via this endpoint", async () => {
-    const resp = await worker.fetch(
-      revealReq({ field: "github_owner", current_password: "env-password" }),
-      freshEnv(),
-      {} as ExecutionContext,
-    );
-    expect(resp.status).toBe(400);
-  });
-
-  it("404s a secret field that is not set", async () => {
-    const resp = await worker.fetch(
-      revealReq({ field: "r2_secret_access_key", current_password: "env-password" }),
-      freshEnv(),
-      {} as ExecutionContext,
-    );
-    expect(resp.status).toBe(404);
-  });
-
-  it("accepts the panel-set password too (dual channel)", async () => {
-    const e = freshEnv();
-    await worker.fetch(
-      req(
-        "/api/config",
-        {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            values: { relay_password: "panel-new-password" },
-            current_password: "env-password",
-          }),
-        },
-        AUTH,
-      ),
-      e,
-      {} as ExecutionContext,
-    );
-    invalidateConfigCache();
-
-    const resp = await worker.fetch(
-      revealReq({ field: "relay_password", current_password: "panel-new-password" }),
-      e,
-      {} as ExecutionContext,
-    );
-    expect(resp.status).toBe(200);
-    expect((await resp.json() as { value: string }).value).toBe("panel-new-password");
   });
 });
 
