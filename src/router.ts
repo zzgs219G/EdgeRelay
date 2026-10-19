@@ -13,14 +13,25 @@ import { handleWorkflows } from "./workflows";
 import { reconcileOpenJobs } from "./reconcile";
 import { handleLogin, handleLogout, handleSession, hasValidSession } from "./ui";
 import { handleListJobs } from "./jobs";
+import { handleGetConfig, handlePatchConfig } from "./config_api";
+import { resolveEnv, type ResolvedEnv } from "./config";
+import { corsHeaders, error, json, timingSafeEqual, withCors } from "./http";
+
+// 历史上其他模块从 router 引这两个，保留 re-export 以免改动扩散。
+export { json, error, corsHeaders };
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
+    // 把 KV 里的运行时配置合并进 env，供后续所有 handler 使用。
+    // 这样各处仍照旧读 env.GITHUB_TOKEN 等，无需改动；而操作者可以
+    // 在面板 UI 改配置（存 KV），不必每次回 Cloudflare 控制台。
+    const cfg: ResolvedEnv = await resolveEnv(env);
+
     // 预检：直接放行（具体请求仍要过鉴权）。
     if (request.method === "OPTIONS") {
-      return corsResponse(new Response(null, { status: 204 }));
+      return withCors(new Response(null, { status: 204 }));
     }
 
     // 健康检查：不鉴权、不计流，供 CF 探活。
@@ -29,7 +40,7 @@ export default {
     // 填错时，/health 是全绿的，而每个真实请求才在 KV 上炸掉，排障时
     // 会被"健康检查明明正常"误导。
     if (url.pathname === "/health" && request.method === "GET") {
-      return await healthCheck(env);
+      return await healthCheck(cfg);
     }
 
     // 登录 / 登出 / 会话探测：纯 JSON，不鉴权（它们就是鉴权的一部分）。
@@ -38,13 +49,13 @@ export default {
     // Worker 手写过一个登录页，与 Vue 的 Login.vue 并存，导致"两个
     // 登录页"（未登录看到 Worker 那个，登录后看到 Vue 那个）。
     if (url.pathname === "/login" && request.method === "POST") {
-      return await handleLogin(request, env);
+      return await handleLogin(request, cfg);
     }
     if (url.pathname === "/logout" && request.method === "POST") {
       return handleLogout();
     }
     if (url.pathname === "/api/session" && request.method === "GET") {
-      return await handleSession(request, env);
+      return await handleSession(request, cfg);
     }
 
     // 其余非 /api/ 的 GET 一律交给 assets 里的 SPA。
@@ -75,30 +86,40 @@ export default {
     // secret，与"浏览器能否打开页面"无关。全局拦会把 / 这种本该返回
     // 页面的路径也变成 500，排障时看到的是一句与现象无关的报错。
     if (url.pathname.startsWith("/api/")) {
-      const authErr = await checkAuth(request, env);
+      const authErr = await checkAuth(request, cfg);
       if (authErr) return authErr;
 
       // 限流同样只作用于 API。
-      const rlErr = checkRateLimit(request, env);
+      const rlErr = checkRateLimit(request, cfg);
       if (rlErr) return rlErr;
     }
 
     try {
       switch (true) {
         case url.pathname === "/api/jobs" && request.method === "GET":
-          return await handleListJobs(env, url);
+          return await handleListJobs(cfg, url);
 
         case url.pathname === "/api/workflows" && request.method === "GET":
-          return await handleWorkflows(env, url);
+          return await handleWorkflows(cfg, url);
 
         case url.pathname === "/api/build" && request.method === "POST":
-          return await handleBuild(request, env, ctx);
+          return await handleBuild(request, cfg, ctx);
+
+        case url.pathname === "/api/status/" && request.method === "GET":
+          return error(400, "bad_request", "缺少 jobId");
 
         case url.pathname.startsWith("/api/status/") && request.method === "GET": {
           const jobId = decodeURIComponent(url.pathname.slice("/api/status/".length));
           if (!jobId) return error(400, "bad_request", "缺少 jobId");
-          return await handleStatus(env, jobId);
+          return await handleStatus(cfg, jobId);
         }
+
+        // ── 运行时配置：面板 UI 直接改，不必回 Cloudflare 控制台 ──
+        case url.pathname === "/api/config" && request.method === "GET":
+          return await handleGetConfig(cfg);
+
+        case url.pathname === "/api/config" && request.method === "PATCH":
+          return await handlePatchConfig(request, cfg);
 
         default:
           // 只有 /api/* 会走到这里（其它 GET 已在上面交给 assets）。
@@ -147,18 +168,30 @@ export default {
  * 浏览器那条通道让 Vue 前端不必自己存令牌：cookie 是 HttpOnly 的，
  * 前端 JS 读不到，XSS 也偷不走；服务端旋转 RELAY_TOKEN 即可全部作废。
  */
-async function checkAuth(request: Request, env: Env): Promise<Response | null> {
-  const expected = env.RELAY_TOKEN;
-  if (!expected) {
-    return error(500, "internal_error", "RELAY_TOKEN 未配置");
-  }
+async function checkAuth(request: Request, env: ResolvedEnv): Promise<Response | null> {
+  // 双通道令牌：KV 里配置的（面板可改）与 CF secret 里的同时有效。
+  // 迁移期新旧令牌并存，换令牌时不会让正在跑的 APP 立刻断掉。
+  const tokens = [env.RELAY_TOKEN, env.RAW_RELAY_TOKEN].filter(
+    (v): v is string => typeof v === "string" && v.length > 0,
+  );
 
   const header = request.headers.get("authorization") ?? "";
   const bearer = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-  if (bearer && timingSafeEqual(bearer, expected)) return null;
 
+  if (bearer) {
+    let ok = false;
+    for (const t of tokens) {
+      if (timingSafeEqual(bearer, t)) ok = true;
+    }
+    if (ok) return null;
+  }
+
+  // 面板会话（浏览器）不需要 token 也能过——只要登录过。
   if (await hasValidSession(request, env)) return null;
 
+  if (tokens.length === 0) {
+    return error(500, "internal_error", "RELAY_TOKEN 未配置");
+  }
   return error(401, "unauthorized", "无效或缺失的 Bearer 令牌 / 会话");
 }
 
@@ -275,43 +308,4 @@ async function healthCheck(env: Env): Promise<Response> {
   );
 }
 
-export function json(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "content-type": "application/json", ...corsHeaders() },
-  });
-}
-
-export function error(status: number, code: ErrorCode, message: string): Response {
-  const body: ErrorResponse = { success: false, error: message, code };
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json", ...corsHeaders() },
-  });
-}
-
-/** 允许所有来源跨域（APP 为原生客户端，无 cookie 需求）。 */
-export function corsHeaders(): Record<string, string> {
-  return {
-    "access-control-allow-origin": "*",
-    "access-control-allow-methods": "GET,POST,OPTIONS",
-    "access-control-allow-headers": "authorization,content-type",
-    "access-control-max-age": "86400",
-  };
-}
-
-function corsResponse(resp: Response): Response {
-  for (const [k, v] of Object.entries(corsHeaders())) {
-    resp.headers.set(k, v);
-  }
-  return resp;
-}
-
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) {
-    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return diff === 0;
-}
+// json / error / corsHeaders / withCors / timingSafeEqual 见 http.ts

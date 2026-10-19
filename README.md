@@ -359,6 +359,71 @@ session cookie 的签名密钥从 `RELAY_PASSWORD` 派生，不依赖 `RELAY_TOK
 **注意**：`package-lock.json` 必须提交。CI 用 `npm ci`，锁文件缺失或与
 `package.json` 不同步会直接失败——这是有意的，用来挡住装不出依赖的部署。
 
+## 运行时配置（面板可改）
+
+配置不再只能去 Cloudflare 控制台改。打开面板右上角**设置**图标
+（`/config`），GitHub token、仓库坐标、R2 域名、限流阈值都可以直接
+填、直接生效。
+
+**优先级**：KV（面板改的）> CF secret / vars > 内置默认。
+清空某一项即回退到 CF 侧的值。
+
+### 接口
+
+| 方法 + 路径 | 说明 |
+|---|---|
+| `GET /api/config` | 当前生效配置。敏感字段只返回 `*_set` 与 `*_masked`，**永不回显明文** |
+| `PATCH /api/config` | 部分更新。body `{values:{...}, current_password?}`；未知键返回 400 |
+
+```bash
+# 改仓库坐标（非敏感，无需密码）
+curl -X PATCH https://<域名>/api/config \
+  -H "Authorization: Bearer $RELAY_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"values":{"github_repo":"my-repo"}}'
+
+# 换 GitHub token（敏感，必须带当前密码）
+curl -X PATCH https://<域名>/api/config \
+  -H "Authorization: Bearer $RELAY_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"values":{"github_token":"ghp_xxx"},"current_password":"..."}'
+
+# 清除某项覆盖，回退到 CF secret
+curl -X PATCH https://<域名>/api/config \
+  -H "Authorization: Bearer $RELAY_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"values":{"github_repo":""}}'
+```
+
+### 两条安全底线
+
+**1. 改敏感字段要二次确认密码。** `github_token` / `relay_token` /
+`relay_password` 的修改必须带 `current_password`——session cookie 可能
+因为共享设备或误开的窗口落到别人手里，而改这些字段等于整个后端被劫持。
+
+**2. env 里的密码和令牌始终有效（逃生舱）。** 这条很关键：
+
+- `RELAY_PASSWORD`：面板改了密码，CF secret 里的旧密码**仍然能登录**。
+  否则一旦你在 UI 里打错或忘了新密码，就彻底锁在门外，只能重开 CF 控制台。
+- `RELAY_TOKEN`：新旧令牌同时有效，APP 迁移期不会因为换令牌立刻断掉。
+
+这两条都有测试钉死（`test/config_api.test.ts` 的
+`escape hatch: env password stays valid after KV override`）。
+
+### 可配置项
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `github_token` | 敏感 | Actions: Read+Write 令牌 |
+| `github_owner` / `github_repo` | 文本 | 目标仓库坐标 |
+| `github_ref` | 文本 | 触发分支 |
+| `r2_public_domain` | 文本 | 补全被打码的产物链接 |
+| `relay_token` | 敏感 | APP 的 Bearer 令牌 |
+| `relay_password` | 敏感 | 面板登录密码 |
+| `rate_limit_per_min` | 数字 | 请求限流，0 关闭 |
+| `job_retention_days` | 数字 | 任务保留天数，1-365 |
+| `run_id_wait_ms` | 数字 | 等 run_id 上限，≤60000 |
+
 ## 配置项
 
 | 变量 | 位置 | 默认 | 说明 |

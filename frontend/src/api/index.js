@@ -82,4 +82,14 @@ export const api = {
   jobs(limit = 50) {
     return request(`/api/jobs?limit=${limit}`)
   },
+
+  /** 运行时配置（敏感字段只返回遮蔽值）。 */
+  getConfig() {
+    return request('/api/config')
+  },
+
+  /** 部分更新配置。改敏感字段必须带 current_password。 */
+  patchConfig(body) {
+    return request('/api/config', { method: 'PATCH', body })
+  },
 }

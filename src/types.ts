@@ -135,6 +135,8 @@ export interface Env {
   GITHUB_REPO: string;
   /** 触发分支，默认 main。 */
   GITHUB_REF?: string;
+  /** R2 公开域名，用于把 GitHub 注解里被打码的 URL 补全。 */
+  R2_PUBLIC_DOMAIN?: string;
   /** 任务表 KV namespace。 */
   EDGE_RELAY_KV: KVNamespace;
   /** Vue 构建产物托管（wrangler.toml 的 [assets]）。 */

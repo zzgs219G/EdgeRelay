@@ -24,7 +24,16 @@
           <button
             class="w-9 h-9 rounded-xl flex items-center justify-center text-slate-500
                    active:bg-slate-100 transition"
+            @click="router.push({ name: 'config' })"
+            aria-label="配置"
+          >
+            <i class="ri-settings-3-line text-lg" />
+          </button>
+          <button
+            class="w-9 h-9 rounded-xl flex items-center justify-center text-slate-500
+                   active:bg-slate-100 transition"
             @click="onLogout"
+            aria-label="退出"
           >
             <i class="ri-logout-box-r-line text-lg" />
           </button>

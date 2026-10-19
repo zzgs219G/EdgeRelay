@@ -15,6 +15,7 @@
  */
 
 import type { Env } from "./types";
+import type { ResolvedEnv } from "./config";
 
 export const SESSION_COOKIE_NAME = "relay_session";
 const SESSION_LABEL = "relay_session_v1";
@@ -147,11 +148,20 @@ function buildSetCookie(value: string, ttlSec: number): string {
  *
  * 只依赖 RELAY_PASSWORD。密码不匹配时统一慢响应约 750ms，压制暴力破解。
  */
-export async function handleLogin(request: Request, env: Env): Promise<Response> {
-  const expected = env.RELAY_PASSWORD;
-  if (!expected) {
+export async function handleLogin(request: Request, env: ResolvedEnv): Promise<Response> {
+  // 双通道：KV 里配置的密码（可在面板 UI 改）与 CF secret 里的密码
+  // 同时有效。单通道会出问题——用户在 UI 里改密码时打错或忘记，
+  // 就把自己彻底锁在门外，只能重开 Cloudflare 控制台。env 是逃生舱。
+  const candidates = [env.RELAY_PASSWORD, env.RAW_RELAY_PASSWORD].filter(
+    (v): v is string => typeof v === "string" && v.length > 0,
+  );
+  if (candidates.length === 0) {
     return json(
-      { ok: false, error: "服务端未配置 RELAY_PASSWORD，请先执行 wrangler secret put RELAY_PASSWORD" },
+      {
+        ok: false,
+        error:
+          "服务端未配置管理密码。请在面板配置页设置，或执行 wrangler secret put RELAY_PASSWORD",
+      },
       500,
     );
   }
@@ -174,7 +184,12 @@ export async function handleLogin(request: Request, env: Env): Promise<Response>
   // 无论成败都慢同样时长，避免用响应时间区分"密码错了"与"密码对了"。
   await new Promise((r) => setTimeout(r, 750));
 
-  if (!constantTimeEqual(provided, expected)) {
+  // 任一候选匹配即通过。常量时间比较逐个跑完，不提前 return。
+  let matched = false;
+  for (const c of candidates) {
+    if (constantTimeEqual(provided, c)) matched = true;
+  }
+  if (!matched) {
     return json({ ok: false, error: "密码不正确" }, 401);
   }
 

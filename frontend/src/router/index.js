@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores'
 import Login from '../views/Login.vue'
 import Dashboard from '../views/Dashboard.vue'
+import Config from '../views/Config.vue'
 
 const routes = [
   {
@@ -14,6 +15,12 @@ const routes = [
     path: '/dashboard',
     name: 'dashboard',
     component: Dashboard,
+    meta: { auth: true },
+  },
+  {
+    path: '/config',
+    name: 'config',
+    component: Config,
     meta: { auth: true },
   },
   // 任何未匹配路径都收敛到根，由守卫按登录态分流。
