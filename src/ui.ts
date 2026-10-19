@@ -23,6 +23,11 @@ function arrayBufferToHex(buf: ArrayBuffer): string {
 }
 
 async function hmacSign(secret: string, payload: string): Promise<string> {
+  if (!secret) {
+    // crypto.subtle.importKey 对空密钥抛的 DataError 信息（"key length (0)"）
+    // 完全指不到"secret 没配"上，所以在这里提前拦住并说清楚。
+    throw new Error("HMAC 密钥为空：RELAY_TOKEN secret 未配置");
+  }
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(secret),
@@ -170,6 +175,17 @@ export async function handleLogin(request: Request, env: Env): Promise<Response>
   if (!expected) {
     return html(
       renderLoginPage("服务端未配置 RELAY_PASSWORD，请先执行 wrangler secret put RELAY_PASSWORD"),
+      500,
+    );
+  }
+
+  // RELAY_TOKEN 是 session cookie 的 HMAC 签名密钥。缺失时若不拦，
+  // crypto.subtle.importKey 收到空串会抛
+  //   Imported HMAC key length (0) must be a non-zero value
+  // 一句与"缺 secret"完全对应不上的 DataError。
+  if (!env.RELAY_TOKEN) {
+    return html(
+      renderLoginPage("服务端未配置 RELAY_TOKEN，请先执行 wrangler secret put RELAY_TOKEN"),
       500,
     );
   }

@@ -204,6 +204,25 @@ describe("POST /login", () => {
     expect(await resp.text()).toContain("密码不正确");
   });
 
+  it("explains itself when RELAY_TOKEN is unset (HMAC key would be empty)", async () => {
+    // 线上真实事故：RELAY_PASSWORD 配了但 RELAY_TOKEN 没配，
+    // crypto.subtle.importKey 抛
+    //   Imported HMAC key length (0) must be a non-zero value
+    // 一句指不到"缺 secret"上的 DataError。现在必须明确提示。
+    const resp = await worker.fetch(
+      req("/login", {
+        method: "POST",
+        body: new URLSearchParams({ password: "test-password" }),
+      }),
+      env({ RELAY_TOKEN: "" }),
+      {} as ExecutionContext,
+    );
+    expect(resp.status).toBe(500);
+    const body = await resp.text();
+    expect(body).toContain("RELAY_TOKEN");
+    expect(body).not.toContain("key length");
+  });
+
   it("explains itself when RELAY_PASSWORD is unset", async () => {
     const resp = await worker.fetch(
       req("/login", {

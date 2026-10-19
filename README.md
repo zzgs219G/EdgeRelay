@@ -326,11 +326,25 @@ push 到 main 自动跑：类型检查 → 单元测试 → 部署。
 npx wrangler kv namespace create EDGE_RELAY_KV
 
 # 2. 设 secrets（绝不进 git、绝不下发到 APP）
+#
+#    前三个是必填，漏一个就有功能坏掉：
+#      GITHUB_TOKEN      → /api/* 全废
+#      RELAY_TOKEN       → /api/* 401 + 登录时 500
+#      RELAY_PASSWORD    → /login 500
+#
+#    生成随机值：openssl rand -hex 32
 npx wrangler secret put GITHUB_TOKEN      # apk-protect-action 的 Actions:Read+Write 令牌
-npx wrangler secret put RELAY_TOKEN       # 网关调用方令牌 + 会话签名密钥
-npx wrangler secret put RELAY_PASSWORD    # 管理面板登录密码（不配则 /login 报 500）
+npx wrangler secret put RELAY_TOKEN       # APP Bearer 令牌 + 面板 session 的 HMAC 签名密钥
+npx wrangler secret put RELAY_PASSWORD    # 管理面板登录密码
 npx wrangler secret put R2_PUBLIC_DOMAIN  # 可选，注解打码补全用
 ```
+
+`RELAY_TOKEN` 有两个用途，别以为是两个 secret：APP 调 `/api/*` 带的
+Bearer 值，以及管理面板 session cookie 的 HMAC 签名密钥。同一个值，
+旋转它等于同时踢掉所有 APP 和所有已登录的面板会话。
+
+配完之后用 `curl https://<域名>/health` 自检——它会报告缺哪个
+（`missing` 数组），比翻 Dashboard 快。
 
 `wrangler.toml` 里 `GITHUB_OWNER` / `GITHUB_REPO` 放在 `[vars]` 而非 secret：
 仓库坐标本身不敏感，敏感的是令牌。
