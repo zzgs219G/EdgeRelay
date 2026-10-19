@@ -178,7 +178,32 @@ curl -H "Authorization: Bearer $RELAY_TOKEN" \
 
 ### `GET /health`
 
-不鉴权、不计流。返回 `{"ok":true,...}`。
+不鉴权、不计流。**做真实探测**（KV 写入后读回 + 检查 secret 是否齐全），
+不是恒为 `ok:true`：
+
+```bash
+curl https://edge-relay.wu.engineer/health
+```
+
+健康时返回 200：
+
+```json
+{ "ok": true, "service": "edge-relay", "kv": "ok", "missing": [], "problems": [] }
+```
+
+不健康时返回 **503**，并指明原因：
+
+```json
+{
+  "ok": false,
+  "kv": "error",
+  "missing": ["GITHUB_TOKEN"],
+  "problems": ["BUILD_JOBS 写入后读回为空", "未配置的 secret/vars: GITHUB_TOKEN"]
+}
+```
+
+之所以不做成恒真：否则 KV 未绑或 namespace id 填错时，`/health` 是全绿的，
+而每个真实请求才在 KV 上炸掉，排障时会被"健康检查明明正常"误导。
 
 ## 部署
 

@@ -22,8 +22,12 @@ export default {
     }
 
     // 健康检查：不鉴权、不计流，供 CF 探活。
+    //
+    // 必须做真实探测，不能只回 ok:true —— 否则 KV 未绑 / namespace id
+    // 填错时，/health 是全绿的，而每个真实请求才在 KV 上炸掉，排障时
+    // 会被"健康检查明明正常"误导。
     if (url.pathname === "/health" && request.method === "GET") {
-      return json({ ok: true, service: "edge-relay", server_time: Date.now() });
+      return await healthCheck(env);
     }
 
     // 鉴权。
@@ -154,6 +158,55 @@ function checkRateLimit(request: Request, env: Env): Response | null {
 }
 
 // ── 工具 ─────────────────────────────────────────────────────────────
+
+/**
+ * 真实健康检查：探测 KV 读写 + 报告缺失的配置。
+ *
+ * 分别用 200（健康）与 503（不健康）表达，让 CF 探活与人工排障都能
+ * 一眼看出问题，而不是拿到一个恒为 true 的 ok 字段。
+ */
+async function healthCheck(env: Env): Promise<Response> {
+  const problems: string[] = [];
+  const missing: string[] = [];
+
+  if (!env.GITHUB_TOKEN) missing.push("GITHUB_TOKEN");
+  if (!env.RELAY_TOKEN) missing.push("RELAY_TOKEN");
+  if (!env.GITHUB_OWNER) missing.push("GITHUB_OWNER");
+  if (!env.GITHUB_REPO) missing.push("GITHUB_REPO");
+
+  // KV 真实探测：写一个探针键再读回。
+  let kvOk = false;
+  try {
+    if (!env.BUILD_JOBS) {
+      problems.push("BUILD_JOBS 未绑定（wrangler.toml 的 [[kv_namespaces]]）");
+    } else {
+      const probeKey = "health:probe";
+      await env.BUILD_JOBS.put(probeKey, String(Date.now()), { expirationTtl: 60 });
+      const back = await env.BUILD_JOBS.get(probeKey);
+      kvOk = back !== null;
+      if (!kvOk) problems.push("BUILD_JOBS 写入后读回为空");
+    }
+  } catch (err) {
+    problems.push(
+      `BUILD_JOBS 不可用: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  if (missing.length > 0) problems.push(`未配置的 secret/vars: ${missing.join(", ")}`);
+
+  const healthy = kvOk && missing.length === 0;
+  return json(
+    {
+      ok: healthy,
+      service: "edge-relay",
+      server_time: Date.now(),
+      kv: kvOk ? "ok" : "error",
+      missing,
+      problems,
+    },
+    healthy ? 200 : 503,
+  );
+}
 
 export function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {

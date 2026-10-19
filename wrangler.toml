@@ -33,10 +33,14 @@ custom_domain = true
 #
 # 创建 namespace：
 #   npx wrangler kv namespace create BUILD_JOBS
-# 把输出的 id 填到下面。
+# 把输出的 id（32 位十六进制）填到下面。
+#
+# 占位符故意用非法格式：wrangler 会在部署阶段就报
+#   KV namespace 'SET_ME' is not valid [code: 10042]
+# 而不是等部署成功、线上请求时才在 KV 上炸。失败得越早越便宜。
 [[kv_namespaces]]
 binding = "BUILD_JOBS"
-id = "PASTE_KV_NAMESPACE_ID_HERE"
+id = "SET_ME"
 
 # ── Cron：每分钟兜底轮询未完结任务 ───────────────────────────────────
 # 1 分钟是 Cloudflare Cron 支持的最小粒度。APP 轮询 /api/status 只读

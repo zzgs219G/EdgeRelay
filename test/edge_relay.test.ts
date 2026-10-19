@@ -79,12 +79,15 @@ describe("EdgeRelay — auth", () => {
   });
 
   it("serves /health without a token", async () => {
+    // 这里只验证"无需令牌即可访问"，不关心健康状态（可能是 200 或 503，
+    // 取决于 KV 是否可用）。要断言健康状态看下面的 /health 用例组。
     const resp = await worker.fetch(
       new Request("https://edge-relay.test/health"),
       env(),
       {} as ExecutionContext,
     );
-    expect(resp.status).toBe(200);
+    expect([200, 503]).toContain(resp.status);
+    expect((await resp.json() as { ok: unknown }).ok).toBeDefined();
   });
 
   it("returns 500 when RELAY_TOKEN is not configured", async () => {
@@ -316,6 +319,49 @@ describe("EdgeRelay — rate limit", () => {
     expect(codes.slice(0, 2)).toEqual([200, 200]);
     expect(codes[2]).toBe(429);
     expect(codes[3]).toBe(429);
+  });
+});
+
+describe("EdgeRelay — /health", () => {
+  it("returns 503 and names the problem when KV is unbound", async () => {
+    const resp = await worker.fetch(
+      new Request("https://edge-relay.test/health"),
+      env({ BUILD_JOBS: undefined as unknown as KVNamespace }),
+      {} as ExecutionContext,
+    );
+    expect(resp.status).toBe(503);
+    const body = (await resp.json()) as { ok: boolean; kv: string; problems: string[] };
+    expect(body.ok).toBe(false);
+    expect(body.kv).toBe("error");
+    expect(body.problems.join(" ")).toContain("BUILD_JOBS");
+  });
+
+  it("returns 200 when KV round-trips and secrets are present", async () => {
+    const store = new Map<string, string>();
+    const resp = await worker.fetch(
+      new Request("https://edge-relay.test/health"),
+      env({ BUILD_JOBS: fakeKv(store) }),
+      {} as ExecutionContext,
+    );
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as { ok: boolean; kv: string; problems: string[] };
+    expect(body.ok).toBe(true);
+    expect(body.kv).toBe("ok");
+    expect(body.problems).toEqual([]);
+    // 探针键必须真的写进去了，否则 kv:ok 是假的。
+    expect([...store.keys()].some((k) => k.startsWith("health:probe"))).toBe(true);
+  });
+
+  it("reports missing secrets even when KV works", async () => {
+    const store = new Map<string, string>();
+    const resp = await worker.fetch(
+      new Request("https://edge-relay.test/health"),
+      env({ BUILD_JOBS: fakeKv(store), GITHUB_TOKEN: "" }),
+      {} as ExecutionContext,
+    );
+    expect(resp.status).toBe(503);
+    const body = (await resp.json()) as { missing: string[] };
+    expect(body.missing).toContain("GITHUB_TOKEN");
   });
 });
 
