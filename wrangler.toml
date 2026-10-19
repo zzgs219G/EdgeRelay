@@ -16,7 +16,10 @@
 # 说明两边不一致，以控制台为准改这里（或去控制台改名）。
 name = "edge-relay"
 main = "src/index.ts"
-compatibility_date = "2026-10-20"
+# compatibility_date 不能晚于构建服务器的当前日期，否则报
+#   Can't set compatibility date in the future: YYYY-MM-DD [code: 10021]
+# 以构建机的时钟为准，宁早勿晚。
+compatibility_date = "2026-10-19"
 compatibility_flags = ["nodejs_compat"]
 
 # workers_dev 必须写在任何 [[routes]] 之前：TOML 的 [[routes]] 是数组表，
