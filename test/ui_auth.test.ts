@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import worker from "../src/router";
+import { invalidateJobsCache } from "../src/jobs";
 import type { Env } from "../src/types";
 import {
   buildSessionCookie,
@@ -432,6 +433,7 @@ describe("/api/* accepts cookie or Bearer", () => {
 
 describe("GET /api/jobs", () => {
   it("returns jobs newest-first, skipping the health probe key", async () => {
+    invalidateJobsCache();
     const store = new Map<string, string>();
     store.set("job:aaa", JSON.stringify({
       job_id: "aaa", run_id: null, workflow_file: "w.yml", workflow_name: "w",

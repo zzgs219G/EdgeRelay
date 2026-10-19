@@ -68,67 +68,52 @@
         </ul>
       </div>
 
-      <!-- ── 指标卡：渐变主卡 + 2 列 ─────────────────────────── -->
-      <div class="grid grid-cols-2 gap-3 mb-4">
-        <!-- 主卡：进行中任务 -->
-        <div
-          class="col-span-2 bg-gradient-to-br from-blue-500 to-blue-600 rounded-[20px] p-5 text-white
-                 shadow-[0_8px_20px_rgba(59,130,246,0.3)] relative overflow-hidden"
-        >
-          <div class="absolute right-0 top-0 opacity-10 translate-x-4 -translate-y-4">
-            <i class="ri-rocket-2-fill text-9xl" />
-          </div>
-          <p class="text-blue-100 text-xs font-bold uppercase tracking-wider mb-1 opacity-90">
-            进行中
-          </p>
-          <div class="flex items-end">
-            <span class="text-4xl font-black tracking-tight">{{ running }}</span>
-            <span class="text-sm font-bold ml-2 mb-1.5 opacity-80">个任务</span>
-          </div>
+      <!-- ── 任务概览：一张主卡承载全部计数 ─────────────────────
+           原来拆成"蓝色大卡 + 已成功 + 已失败"三张，那是沿用发卡网
+           把营收当主指标的布局。任务网关里三个计数是同一件事的三个
+           状态，合在一张卡里更省空间也更好扫读。 -->
+      <section
+        class="rounded-[20px] p-5 text-white relative overflow-hidden mb-4
+               bg-gradient-to-br from-blue-500 to-blue-600
+               shadow-[0_8px_20px_rgba(59,130,246,0.3)]"
+      >
+        <div class="absolute right-0 top-0 opacity-10 translate-x-4 -translate-y-4">
+          <i class="ri-rocket-2-fill text-9xl" />
         </div>
 
-        <!-- 累计成功 -->
-        <div
-          class="bg-white rounded-[20px] p-4 shadow-[0_4px_12px_rgba(0,0,0,0.03)]
-                 flex flex-col justify-between"
-        >
-          <p class="text-gray-400 text-[11px] font-bold uppercase mb-2">已成功</p>
-          <div class="text-xl font-black text-green-500">{{ succeeded }}</div>
-        </div>
-
-        <!-- 累计失败 -->
-        <div
-          class="bg-white rounded-[20px] p-4 shadow-[0_4px_12px_rgba(0,0,0,0.03)]
-                 flex flex-col justify-between"
-        >
-          <p class="text-gray-400 text-[11px] font-bold uppercase mb-2">已失败</p>
-          <div class="text-xl font-black text-red-500">{{ failed }}</div>
-        </div>
-
-        <!-- 系统状态 -->
-        <div
-          class="col-span-2 bg-white rounded-[20px] p-4 shadow-[0_4px_12px_rgba(0,0,0,0.03)]
-                 flex items-center justify-between"
-        >
-          <div class="flex items-center space-x-3">
-            <div class="w-10 h-10 bg-green-50 rounded-full flex items-center justify-center">
-              <div
-                class="w-3 h-3 rounded-full shadow-[0_0_8px_rgba(34,197,94,0.6)]"
-                :class="healthOk ? 'bg-green-500 animate-dot' : 'bg-red-500'"
-              />
-            </div>
-            <div>
-              <div class="text-gray-800 font-bold text-sm">
-                {{ healthOk ? '系统运行中' : '后端异常' }}
-              </div>
-              <div class="text-gray-400 text-xs mt-0.5">
-                {{ healthOk ? '各项服务正常' : '检查 secret 配置' }}
-              </div>
-            </div>
+        <div class="relative flex items-center justify-between mb-4">
+          <div>
+            <p class="text-blue-100 text-[11px] font-bold uppercase tracking-wider opacity-90">
+              任务概览
+            </p>
+            <p class="text-white/70 text-[11px] mt-0.5">
+              {{ job.hasActive ? '有任务进行中，状态自动刷新' : '全部完成，已停止自动刷新' }}
+            </p>
           </div>
-          <span class="text-[11px] text-gray-400 font-mono">{{ job.jobs.length }} 条记录</span>
+          <span class="flex items-center gap-1.5 text-[11px] font-bold bg-white/15 px-2.5 py-1 rounded-full">
+            <span
+              class="w-1.5 h-1.5 rounded-full bg-white"
+              :class="{ 'animate-dot': job.hasActive }"
+            />
+            {{ job.hasActive ? '刷新中' : '已暂停' }}
+          </span>
         </div>
-      </div>
+
+        <div class="relative grid grid-cols-3 gap-2">
+          <div>
+            <div class="text-3xl font-black tracking-tight leading-none">{{ running }}</div>
+            <div class="text-[11px] text-blue-100 mt-1.5 opacity-90">进行中</div>
+          </div>
+          <div class="border-l border-white/20 pl-3">
+            <div class="text-3xl font-black tracking-tight leading-none">{{ succeeded }}</div>
+            <div class="text-[11px] text-blue-100 mt-1.5 opacity-90">已成功</div>
+          </div>
+          <div class="border-l border-white/20 pl-3">
+            <div class="text-3xl font-black tracking-tight leading-none">{{ failed }}</div>
+            <div class="text-[11px] text-blue-100 mt-1.5 opacity-90">已失败</div>
+          </div>
+        </div>
+      </section>
 
       <!-- ── 发起构建 ────────────────────────────────────────── -->
       <div class="bg-white rounded-[20px] p-5 shadow-[0_4px_12px_rgba(0,0,0,0.03)] mb-4">
@@ -333,6 +318,9 @@ async function onBuild() {
   form.apk_url = ''
   form.protect_config = ''
   formOpen.value = false
+  // 新任务产生在途状态，重新开启轮询
+  pollCount = 0
+  startPolling()
 }
 
 async function onLogout() {
@@ -340,27 +328,67 @@ async function onLogout() {
   router.replace({ name: 'login' })
 }
 
-// 轮询在途任务：5 秒一次，只读 KV，不烧 GitHub 配额。
-// 页面不可见时暂停——移动端切后台不该继续打请求。
+/**
+ * 轮询策略（KV 免费额度很紧，必须克制）。
+ *
+ * 免费额度：KV 读 100k/天、KV list 仅 1k/天。原实现 5 秒一次、
+ * 不管有没有在途任务都轮，挂 8 小时约 5760 次 list——直接超 5 倍。
+ *
+ * 现在的三条约束：
+ *   1. 只在 has_active（后端算好的）为真时轮询，全部完成就停
+ *   2. 间隔 20 秒而非 5 秒（构建本身要几分钟，无需秒级）
+ *   3. 页面不可见时不轮；回到前台立刻补一次
+ * 后端还有 15 秒的列表缓存兜底，即使多点几次也不落 KV。
+ */
+const POLL_ACTIVE_MS = 20_000
 let timer = null
-function startPolling() {
-  stopPolling()
-  timer = setInterval(() => {
-    if (document.visibilityState === 'visible') job.loadJobs({ onAuthLost })
-  }, 5000)
-}
+let pollCount = 0
+/** 连续轮询上限：约 30 分钟。防止某个 run 卡住时无限刷。 */
+const MAX_POLLS = 90
+
 function stopPolling() {
   if (timer) clearInterval(timer)
   timer = null
 }
 
+function startPolling() {
+  stopPolling()
+  if (!job.hasActive) return
+  timer = setInterval(async () => {
+    if (document.visibilityState !== 'visible') return
+    if (!job.hasActive) {
+      stopPolling()
+      return
+    }
+    if (++pollCount > MAX_POLLS) {
+      stopPolling()
+      return
+    }
+    await job.loadJobs({ onAuthLost })
+    if (!job.hasActive) stopPolling()
+  }, POLL_ACTIVE_MS)
+}
+
+function onVisibility() {
+  if (document.visibilityState === 'visible') {
+    // 回到前台补一次，然后按需重启定时器
+    job.loadJobs({ onAuthLost }).then(() => {
+      pollCount = 0
+      startPolling()
+    })
+  } else {
+    stopPolling()
+  }
+}
+
 onMounted(async () => {
   await refreshAll()
+  pollCount = 0
   startPolling()
-  document.addEventListener('visibilitychange', startPolling)
+  document.addEventListener('visibilitychange', onVisibility)
 })
 onUnmounted(() => {
   stopPolling()
-  document.removeEventListener('visibilitychange', startPolling)
+  document.removeEventListener('visibilitychange', onVisibility)
 })
 </script>

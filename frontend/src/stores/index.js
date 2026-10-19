@@ -72,6 +72,8 @@ export const useJobStore = defineStore('job', () => {
   const loading = ref(false)
   const workflows = ref([])
   const submitting = ref(false)
+  /** 是否存在未完结任务，决定前端要不要继续轮询 */
+  const hasActive = ref(false)
 
   /**
    * 拉任务列表。
@@ -85,6 +87,9 @@ export const useJobStore = defineStore('job', () => {
     try {
       const d = await api.jobs(100)
       jobs.value = d.jobs || []
+      // has_active 由后端算：没有在途任务时前端停止轮询，
+      // 避免"全天挂着面板 → 打爆 KV 额度"。
+      hasActive.value = d.has_active === true
       return true
     } catch (e) {
       if (e.status === 401) {
@@ -122,5 +127,5 @@ export const useJobStore = defineStore('job', () => {
     }
   }
 
-  return { jobs, loading, workflows, submitting, loadJobs, loadWorkflows, submit }
+  return { jobs, loading, workflows, submitting, hasActive, loadJobs, loadWorkflows, submit }
 })

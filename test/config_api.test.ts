@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import worker from "../src/router";
 import type { Env } from "../src/types";
 import { invalidateConfigCache, maskSecret } from "../src/config";
+import { invalidateJobsCache } from "../src/jobs";
 
 /**
  * 运行时配置：GET /api/config 与 PATCH /api/config。
@@ -59,6 +60,8 @@ const AUTH = { authorization: "Bearer env-relay-token" };
 
 function freshEnv(overrides: Partial<Env> = {}): Env {
   invalidateConfigCache();
+  // jobs 列表有 15s isolate 缓存，测试间必须清掉，否则串味
+  invalidateJobsCache();
   return env(overrides);
 }
 
@@ -357,5 +360,78 @@ describe("maskSecret — 固定 6 星，不泄漏长度", () => {
     expect(maskSecret("abc")).toBe("******");
     expect(maskSecret("")).toBeNull();
     expect(maskSecret(undefined)).toBeNull();
+  });
+});
+
+// ── /api/jobs 的轮询成本控制 ─────────────────────────────────────────
+
+describe("GET /api/jobs — 缓存与 has_active", () => {
+  function jobStore(status: string): Map<string, string> {
+    const store = new Map<string, string>()
+    store.set("job:aaa", JSON.stringify({
+      job_id: "aaa", run_id: null, workflow_file: "w.yml", workflow_name: "w",
+      protect_config: "{}", dpt_extra_args: "", display_name: "",
+      status, conclusion: status === "completed" ? "success" : null,
+      download_url: null, error: null,
+      created_at_ms: 1000, updated_at_ms: 2000,
+    }))
+    return store
+  }
+
+  it("reports has_active=true when a job is still running", async () => {
+    invalidateJobsCache()
+    const resp = await worker.fetch(
+      req("/api/jobs", {}, AUTH),
+      freshEnv({ EDGE_RELAY_KV: fakeKv(jobStore("in_progress")) }),
+      {} as ExecutionContext,
+    );
+    const body = (await resp.json()) as { has_active: boolean };
+    // 前端据此决定要不要继续轮询——这是省 KV 额度的关键信号
+    expect(body.has_active).toBe(true);
+  });
+
+  it("reports has_active=false when everything is done", async () => {
+    invalidateJobsCache()
+    const resp = await worker.fetch(
+      req("/api/jobs", {}, AUTH),
+      freshEnv({ EDGE_RELAY_KV: fakeKv(jobStore("completed")) }),
+      {} as ExecutionContext,
+    );
+    const body = (await resp.json()) as { has_active: boolean };
+    expect(body.has_active).toBe(false);
+  });
+
+  it("serves repeat polls from cache instead of hitting KV every time", async () => {
+    invalidateJobsCache();
+
+    const store = jobStore("completed");
+    let kvGets = 0;
+    const countingKv = {
+      async get(k: string) {
+        kvGets++;
+        return store.get(k) ?? null;
+      },
+      async put(k: string, v: string) {
+        store.set(k, v);
+      },
+      async list(o: { prefix?: string; limit?: number } = {}) {
+        const keys = [...store.keys()]
+          .filter((k) => k.startsWith(o.prefix ?? ""))
+          .slice(0, o.limit ?? 1000)
+          .map((name) => ({ name }));
+        return { keys, list_complete: true, cursor: "" };
+      },
+    } as unknown as KVNamespace;
+
+    const e = freshEnv({ EDGE_RELAY_KV: countingKv });
+
+    // 连续 5 次轮询
+    for (let i = 0; i < 5; i++) {
+      await worker.fetch(req("/api/jobs", {}, AUTH), e, {} as ExecutionContext);
+    }
+    // 5 次轮询共读 2 次 KV：1 次路由入口读配置（loadConfig 有 30s
+    // 缓存），1 次列表本身。不缓存的话是 5 次列表读 + 5 次配置读。
+    // 关键是「远小于轮询次数」。
+    expect(kvGets).toBeLessThanOrEqual(2);
   });
 });
