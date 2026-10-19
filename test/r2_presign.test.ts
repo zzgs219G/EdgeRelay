@@ -67,10 +67,35 @@ describe("validatePresignKey", () => {
     expect(validatePresignKey("apks//x.apk")).toMatch(/连续斜杠/);
   });
 
-  it("rejects unsafe characters", () => {
-    expect(validatePresignKey("apks/a b.apk")).toMatch(/只能包含/);
-    expect(validatePresignKey("apks/a?x=1")).toMatch(/只能包含/);
-    expect(validatePresignKey("apks/a\n.apk")).toMatch(/只能包含/);
+  it("accepts UTF-8 filenames — APK 名字普遍带中文", () => {
+    // 真实事故：APP 的 key 是 `<时间戳>_<原始文件名>`，而 APK 文件名
+    // 带中文（简盒-正式版.apk），被早期的字符白名单拒掉，上传直接失败。
+    expect(validatePresignKey("apks/1700000000000_简盒-正式版.apk")).toBeNull();
+    expect(validatePresignKey("apks/简盒 带空格.apk")).toBeNull();
+    expect(validatePresignKey("apks/（1）副本.apk")).toBeNull();
+    expect(validatePresignKey("apks/日本語テスト.apk")).toBeNull();
+  });
+
+  it("accepts characters that are legal in S3 keys", () => {
+    expect(validatePresignKey("apks/a b.apk")).toBeNull();
+    expect(validatePresignKey("apks/a+b.apk")).toBeNull();
+    expect(validatePresignKey("apks/a@b.apk")).toBeNull();
+    expect(validatePresignKey("apks/a=b.apk")).toBeNull();
+  });
+
+  it("rejects control characters that would break HTTP headers", () => {
+    expect(validatePresignKey("apks/a\n.apk")).toMatch(/控制字符/);
+    expect(validatePresignKey("apks/a\r.apk")).toMatch(/控制字符/);
+    expect(validatePresignKey("apks/a\u0000.apk")).toMatch(/控制字符/);
+  });
+
+  it("rejects dot segments beyond the simple .. check", () => {
+    expect(validatePresignKey("apks/./x.apk")).toMatch(/路径段/);
+    expect(validatePresignKey("apks/a/../b.apk")).toMatch(/路径段/);
+  });
+
+  it("rejects a trailing slash", () => {
+    expect(validatePresignKey("apks/dir/")).toMatch(/斜杠结尾/);
   });
 });
 
@@ -143,5 +168,31 @@ describe("POST /api/r2/presign — handler", () => {
     expect(text).not.toContain("secret");
     // 但 access key id 会出现在签名 URL 的 credential 里，这是 SigV4 规范
     expect(text).toContain("AKIAEXAMPLE");
+  });
+});
+
+describe("中文 key 的签名 URL", () => {
+  it("percent-encodes UTF-8 exactly like encodeURIComponent", async () => {
+    const key = "apks/1700000000000_简盒-正式版.apk";
+    const url = await buildPresignedUrl({
+      method: "PUT",
+      accessKey: "AKIAEXAMPLE",
+      secretKey: "secret",
+      endpoint: "https://acc.r2.cloudflarestorage.com",
+      bucket: "bucket",
+      key,
+      region: "auto",
+      time: new Date("2026-10-20T00:00:00Z"),
+      expiresSec: 600,
+      pathStyle: true,
+    });
+
+    // canonical URI 必须是标准的 UTF-8 百分号编码
+    expect(url).toContain("%E7%AE%80%E7%9B%92"); // 简盒
+    expect(url).toContain("%E6%AD%A3%E5%BC%8F%E7%89%88"); // 正式版
+    // 不能二次编码（% 变成 %25）
+    expect(url).not.toContain("%25E7");
+    // 签名参数必须存在
+    expect(url).toContain("X-Amz-Signature=");
   });
 });

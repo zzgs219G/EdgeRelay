@@ -164,19 +164,37 @@ export async function buildPresignedUrl(p: PresignParams): Promise<string> {
 // ── key 校验 ─────────────────────────────────────────────────────────
 
 /**
- * 只允许 apks/ 前缀 + 安全字符。
+ * 校验 key 的**路径安全性**，不限制字符集。
  *
- * 这是安全边界：不能让 APP 签出一个能覆盖任意对象的 URL（比如
- * `../private/xxx`）。签名 URL 一旦能指向任意 key，等于把整个桶的
- * 写权限发出去。
+ * 安全边界只有三条（都是为了让签名 URL 不能指向 apks/ 之外的对象）：
+ *   1. 必须以 apks/ 开头
+ *   2. 不能含 ..（防路径穿越）
+ *   3. 不能含 // 或控制字符（防歧义路径）
+ *
+ * 早期版本还加了 `[A-Za-z0-9/_.-]` 字符白名单，本意是"安全"，实际是
+ * 拒绝正常输入——APP 的 key 是 `<时间戳>_<原始文件名>`，而 APK 文件名
+ * 普遍带中文（如「简盒-正式版.apk」），于是上传直接被拒。
+ *
+ * S3 的 object key 本身支持任意 UTF-8；canonical URI 会由 uriEncode
+ * 按 UTF-8 逐字节百分号编码（与 encodeURIComponent 结果一致，已对拍）。
+ * 所以放开字符集不影响签名正确性。
  */
 export function validatePresignKey(key: string): string | null {
   if (!key) return "缺少 key";
   if (key.length > 512) return "key 过长";
   if (!key.startsWith("apks/")) return "key 必须以 apks/ 开头";
-  if (key.includes("..")) return "key 不能包含 ..";
+
+  // 路径穿越：任何 .. 段都不允许
+  if (key.split("/").some((seg) => seg === ".." || seg === ".")) {
+    return "key 不能包含 . 或 .. 路径段";
+  }
   if (key.includes("//")) return "key 不能包含连续斜杠";
-  if (!/^[A-Za-z0-9/_.\-]+$/.test(key)) return "key 只能包含字母数字与 / _ . -";
+  if (key.endsWith("/")) return "key 不能以斜杠结尾";
+
+  // 控制字符（含换行）会破坏 HTTP 头与签名，一律拒绝
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(key)) return "key 不能包含控制字符";
+
   return null;
 }
 
