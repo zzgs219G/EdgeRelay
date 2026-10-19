@@ -57,7 +57,7 @@ custom_domain = true
 # 而不是等部署成功、线上请求时才在 KV 上炸。失败得越早越便宜。
 [[kv_namespaces]]
 binding = "EDGE_RELAY_KV"
-id = "SET_ME"
+id = "adb7121cfadd49a3b7fd6c0e20d1f720"
 
 # ── Cron：每分钟兜底轮询未完结任务 ───────────────────────────────────
 # 1 分钟是 Cloudflare Cron 支持的最小粒度。APP 轮询 /api/status 只读
