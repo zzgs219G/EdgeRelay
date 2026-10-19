@@ -69,21 +69,49 @@ fall through 到静态资源；`not_found_handling = "single-page-application"`
 
 ### 目录
 
+**后端（`src/`）**
+
+| 文件 | 职责 |
+|---|---|
+| `index.ts` | 入口，转出 `router.ts` |
+| `router.ts` | fetch 入口：CORS + 双通道鉴权 + 限流 + 路由表 + Cron |
+| `http.ts` | 共享响应工具（json / error / CORS / 常量时间比较） |
+| `types.ts` | Env 与全部请求/响应类型 |
+| `ui.ts` | session cookie 签发校验；`POST /login` `/logout`、`GET /api/session` |
+| `config.ts` | 运行时配置：KV 优先、env 兜底；`resolveEnv` 合并 |
+| `config_api.ts` | `GET` / `PATCH /api/config` |
+| `github.ts` | GitHub REST 客户端 + `parseDispatchInputs` + `getRunSteps` |
+| `build.ts` | `POST /api/build`：dispatch + 同步等 run_id |
+| `status.ts` | `GET /api/status/:jobId`：读 KV，缺失回查 GitHub |
+| `status_steps.ts` | `GET /api/status/:jobId/steps`：job/step 明细 |
+| `workflows.ts` | `GET /api/workflows`（只返回 `protect-*` 构建流水线） |
+| `jobs.ts` | `GET /api/jobs`：面板任务列表（15s 缓存 + `has_active`） |
+| `r2_presign.ts` | `POST /api/r2/presign`：S3 SigV4 预签名上传 |
+| `reconcile.ts` | Cron 兜底轮询未完结任务 |
+| `kv_store.ts` | 任务表 KV 读写、job_id 生成 |
+
+**前端（`frontend/`，独立 npm 工程）**
+
+| 文件 | 职责 |
+|---|---|
+| `src/views/Login.vue` | 登录页 |
+| `src/views/Dashboard.vue` | 任务概览 + 任务列表 + 发起构建（默认折叠） |
+| `src/views/Config.vue` | 配置页：卡片分组 + 编辑弹窗 |
+| `src/api/index.js` | API 封装，`credentials: same-origin` 带 cookie |
+| `src/stores/index.js` | Pinia：`auth`（登录态）、`job`（任务列表 + 轮询信号） |
+| `src/router/index.js` | 路由 + 登录态守卫 |
+| `src/style.css` | Tailwind + Element Plus 主题对齐 + 玻璃拟态 token |
+| `scripts/patch-remixicon.mjs` | 构建期把 RemixIcon 裁到只用 woff2 |
+
+**其它**
+
 | 路径 | 内容 |
 |---|---|
-| `frontend/` | Vue 3 前端源码（独立 npm 工程） |
-| `frontend/src/views/` | `Login.vue`（登录）、`Dashboard.vue`（控制台） |
-| `frontend/src/api/index.js` | API 封装，`credentials: same-origin` 带 cookie |
-| `frontend/src/stores/` | Pinia：`auth`（登录态）、`job`（任务列表） |
-| `src/` | Worker 后端逻辑 |
-| `src/router.ts` | fetch 入口：CORS + 双通道鉴权 + 路由表 + Cron |
-| `src/ui.ts` | 登录页 HTML + session cookie 签发/校验 |
-| `src/jobs.ts` | `GET /api/jobs`（管理台任务列表） |
-| `src/github.ts` | GitHub REST 最小客户端 + yml inputs 解析 |
-| `src/build.ts` | `POST /api/build`：dispatch + 同步等 run_id |
-| `src/status.ts` | `GET /api/status/:jobId`：读 KV + 读缺失回查 |
-| `src/reconcile.ts` | Cron 兜底轮询 |
-| `src/kv_store.ts` | 任务表 KV 读写 |
+| `test/` | Vitest 套件（node 环境，Termux 可跑） |
+| `vitest.config.ts` | workers pool 配置（CI 用） |
+| `vitest.node.config.ts` | node 环境配置（本机用） |
+| `scripts/check-dist.mjs` | 校验 `frontend/dist` 与源码同步 |
+| `.github/workflows/ci.yml` | 质量门：tsc + 测试 + 前端构建 + dist 同步（不部署） |
 
 ### 鉴权：两条通道
 

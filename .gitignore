@@ -10,7 +10,6 @@ dist/
 
 # 本地过程产物（构建日志副本等），不进 git
 .local-docs/
-docs/报错.md
 
 # 构建期生成（scripts/patch-remixicon.mjs 产出）
 frontend/src/generated/

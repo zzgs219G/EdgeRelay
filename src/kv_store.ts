@@ -11,7 +11,7 @@
  *     status.ts。
  */
 
-import type { BuildJob, Env, JobStatus } from "./types";
+import type { BuildJob, Env } from "./types";
 
 /**
  * job key：`job:<job_id>`，其中 job_id 自带逆序时间戳前缀。
@@ -109,8 +109,4 @@ export function toAppStatus(job: BuildJob): "PENDING" | "PROCESSING" | "SUCCESS"
     return job.conclusion === "success" ? "SUCCESS" : "FAILED";
   }
   return job.status === "queued" ? "PENDING" : "PROCESSING";
-}
-
-export function isTerminal(status: JobStatus): boolean {
-  return status === "completed";
 }

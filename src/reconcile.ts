@@ -19,7 +19,7 @@ import {
   GitHubError,
   listRecentRuns,
 } from "./github";
-import { listOpenJobs, patchJob, putJob } from "./kv_store";
+import { listOpenJobs, patchJob } from "./kv_store";
 
 /** 单轮最多处理的任务数，防一次 cron 跑爆 GitHub 配额。 */
 const MAX_JOBS_PER_TICK = 40;
@@ -86,18 +86,5 @@ async function refreshInProgress(env: Env, job: BuildJob): Promise<void> {
     conclusion: run.conclusion,
     download_url: downloadUrl,
     error: run.conclusion === "success" ? null : `流水线以 ${run.conclusion ?? "unknown"} 结束`,
-  });
-}
-
-/** 供测试注入：把任务标记为终态。 */
-export async function markCompletedForTest(env: Env, jobId: string): Promise<void> {
-  const jobs = await listOpenJobs(env, 1);
-  const job = jobs.find((j) => j.job_id === jobId);
-  if (!job) return;
-  await putJob(env, {
-    ...job,
-    status: "completed",
-    conclusion: "success",
-    updated_at_ms: Date.now(),
   });
 }
