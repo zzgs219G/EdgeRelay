@@ -95,10 +95,14 @@ select {
   --el-button-active-bg-color: #1d4ed8;
 }
 
-/* 消息提示 */
+/*
+ * 消息提示：只调观感，不动定位。
+ * 定位（position:fixed / top / left / z-index）全部由
+ * element-plus/theme-chalk/el-message.css 提供——那条 CSS 一旦漏引，
+ * 消息条会掉进文档流卡在页面底部，看着像个去不掉的弹窗。
+ */
 .el-message {
   border-radius: 12px !important;
-  border: none !important;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1) !important;
 }
 
