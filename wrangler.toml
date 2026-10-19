@@ -1,6 +1,7 @@
-name = "proxy-coordinator"
+# wrangler.toml
+name = 'edge-relay'
 main = "src/index.ts"
-compatibility_date = "2025-04-01"
+compatibility_date = "2026-10-19"
 compatibility_flags = ["nodejs_compat"]
 
 # Wrangler infers `workers_dev = false` whenever `[[routes]]` is present unless
