@@ -137,8 +137,14 @@ export interface Env {
   GITHUB_REF?: string;
   /** 任务表 KV namespace。 */
   EDGE_RELAY_KV: KVNamespace;
+  /** Vue 构建产物托管（wrangler.toml 的 [assets]）。 */
+  ASSETS?: Fetcher;
   /** 网关调用方令牌（APP 与后台面板共用同一值）。 */
   RELAY_TOKEN: string;
+  /** 管理面板登录密码（仅后端，绝不下发到 APP）。 */
+  RELAY_PASSWORD?: string;
+  /** 管理面板会话 TTL（秒），默认 8 小时，clamp 到 [60, 30天]。 */
+  RELAY_SESSION_TTL_SEC?: string;
   /** 每分钟令牌桶容量，默认 120；"0" 关闭限流。 */
   RATE_LIMIT_PER_MIN?: string;
   /** KV 中任务记录的保留天数，默认 7。 */

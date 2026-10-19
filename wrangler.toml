@@ -1,3 +1,12 @@
+# workers_dev 必须放在所有表（[assets] / [[routes]] / ...）之前。
+#
+# TOML 的规则：顶层键一旦写在某个表头之后，就归那个表所有。历史上这里
+# 踩过两次坑——先是被并进 [[routes]] 导致
+#   Expected "routes" to be ... { pattern, custom_domain, zone_id | zone_name }
+# 后来又被并进 [assets]。两者都是部署阶段才炸，且报错信息指向 routes/assets，
+# 很难联想到是 workers_dev 放错了位置。所以固定放在这里。
+workers_dev = true
+
 # EdgeRelay — APK 构建网关
 #
 # 由原 ProxyCoordinator（JAVDB 爬虫调度器）重构而来。现在它是
@@ -22,11 +31,23 @@ main = "src/index.ts"
 compatibility_date = "2026-10-19"
 compatibility_flags = ["nodejs_compat"]
 
-# workers_dev 必须写在任何 [[routes]] 之前：TOML 的 [[routes]] 是数组表，
-# 写在它后面的顶层键会被归进 routes 元素，导致
-# "Expected routes to be an array of either strings or objects with the
-#  shape { pattern, custom_domain, zone_id | zone_name }" 而 deploy 失败。
-workers_dev = true
+# ── 静态资源：Vue 3 前端构建产物 ────────────────────────────────────
+# frontend/ 里是 Vue 3 + Vite + Element Plus 源码，npm run build 产出
+# frontend/dist，由 Worker 一并托管。/api/* 与前端同源，零跨域。
+#
+# run_worker_first = true：所有请求先过 Worker，/api/*、/login、
+# /health 由 Worker 处理，其余 fall through 到静态资源。
+# 若设为 false，命中资源的请求根本不进 Worker，登录后的 / 重定向
+# 逻辑就拿不到控制权。
+#
+# not_found_handling：SPA History 路由兜底——未匹配路径回 index.html，
+# 由 vue-router 决定渲染登录页还是控制台。
+[assets]
+directory = "./frontend/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = true
+html_handling = "auto-trailing-slash"
 
 # 自定义域名（Wrangler 会代配 DNS + 边缘 TLS）。
 # zone 必须位于当前 Cloudflare 账号下。

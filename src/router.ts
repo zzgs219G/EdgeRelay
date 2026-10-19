@@ -11,6 +11,9 @@ import { handleBuild } from "./build";
 import { handleStatus } from "./status";
 import { handleWorkflows } from "./workflows";
 import { reconcileOpenJobs } from "./reconcile";
+import { handleLogin, handleLogout, hasValidSession, renderLoginPage } from "./ui";
+import { handleListJobs } from "./jobs";
+import { htmlResponse } from "./http";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -30,16 +33,43 @@ export default {
       return await healthCheck(env);
     }
 
-    // 鉴权。
-    const authErr = checkAuth(request, env);
-    if (authErr) return authErr;
+    // 登录 / 登出：不鉴权（它们就是鉴权的一部分）。
+    if (url.pathname === "/login" && request.method === "POST") {
+      return await handleLogin(request, env);
+    }
+    if (url.pathname === "/logout" && request.method === "POST") {
+      return handleLogout();
+    }
 
-    // 限流（令牌桶，per-token，isolate 内）。
-    const rlErr = checkRateLimit(request, env);
-    if (rlErr) return rlErr;
+    // 根路径：未登录给登录页，已登录放行给 SPA（assets 托管）。
+    // 这是"打开网页不该报 RELAY_TOKEN 未配置"的关键——页面本身与
+    // 后端 secret 无关，secret 缺失只在调 /api/* 时才暴露。
+    if (url.pathname === "/" && request.method === "GET") {
+      if (await hasValidSession(request, env)) {
+        return env.ASSETS ? env.ASSETS.fetch(request) : htmlResponse(renderLoginPage());
+      }
+      return htmlResponse(renderLoginPage());
+    }
+
+    // 鉴权 —— 只拦 /api/。
+    //
+    // deliberately 不做成全局前置：RELAY_TOKEN / RELAY_PASSWORD 是后端
+    // secret，与"浏览器能否打开页面"无关。全局拦会把 / 这种本该返回
+    // 页面的路径也变成 500，排障时看到的是一句与现象无关的报错。
+    if (url.pathname.startsWith("/api/")) {
+      const authErr = await checkAuth(request, env);
+      if (authErr) return authErr;
+
+      // 限流同样只作用于 API。
+      const rlErr = checkRateLimit(request, env);
+      if (rlErr) return rlErr;
+    }
 
     try {
       switch (true) {
+        case url.pathname === "/api/jobs" && request.method === "GET":
+          return await handleListJobs(env, url);
+
         case url.pathname === "/api/workflows" && request.method === "GET":
           return await handleWorkflows(env, url);
 
@@ -82,17 +112,28 @@ export default {
 
 // ── 鉴权 ─────────────────────────────────────────────────────────────
 
-function checkAuth(request: Request, env: Env): Response | null {
+/**
+ * /api/* 鉴权：两条通道，任一通过即可。
+ *
+ *   1. Bearer <RELAY_TOKEN>            —— APP / 脚本等机器调用方
+ *   2. session cookie (relay_session)  —— 浏览器里的管理面板
+ *
+ * 浏览器那条通道让 Vue 前端不必自己存令牌：cookie 是 HttpOnly 的，
+ * 前端 JS 读不到，XSS 也偷不走；服务端旋转 RELAY_TOKEN 即可全部作废。
+ */
+async function checkAuth(request: Request, env: Env): Promise<Response | null> {
   const expected = env.RELAY_TOKEN;
   if (!expected) {
     return error(500, "internal_error", "RELAY_TOKEN 未配置");
   }
+
   const header = request.headers.get("authorization") ?? "";
-  const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-  if (!token || !timingSafeEqual(token, expected)) {
-    return error(401, "unauthorized", "无效或缺失的 Bearer 令牌");
-  }
-  return null;
+  const bearer = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+  if (bearer && timingSafeEqual(bearer, expected)) return null;
+
+  if (await hasValidSession(request, env)) return null;
+
+  return error(401, "unauthorized", "无效或缺失的 Bearer 令牌 / 会话");
 }
 
 // ── 限流 ─────────────────────────────────────────────────────────────

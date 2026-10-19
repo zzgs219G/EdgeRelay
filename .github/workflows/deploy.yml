@@ -1,17 +1,16 @@
-# EdgeRelay — push 自动类型检查 + 部署
+# EdgeRelay — push 自动类型检查 + 前端构建 + 部署
 #
 # 触发：push 到 main，或在 Actions 页手动触发。
 #
 # 部署需要两个 repo secrets：
 #   CF_API_TOKEN   — Cloudflare API token，权限 "Workers Scripts: Edit"
-#                     （Account → API Tokens → Create Token → Edit Cloudflare
-#                      Workers 模板）。不要用 Global API Key。
-#   CLOUDFLARE_ACCOUNT_ID — 账号 id（Workers 面板右侧栏可见）
+#   CLOUDFLARE_ACCOUNT_ID — 账号 id
 #
 # 另外三个 secret 在首次部署前用 wrangler 设置（不进 git、不进 CI）：
 #   npx wrangler secret put GITHUB_TOKEN
 #   npx wrangler secret put RELAY_TOKEN
-#   npx wrangler secret put R2_PUBLIC_DOMAIN   # 可选
+#   npx wrangler secret put RELAY_PASSWORD   # 管理面板登录密码
+#   npx wrangler secret put R2_PUBLIC_DOMAIN # 可选
 
 name: EdgeRelay deploy
 
@@ -37,8 +36,11 @@ jobs:
 
       # npm ci 需要 package-lock.json 与 package.json 同步；不同步会让这里
       # 直接失败，从而挡住一个装不出依赖的 deploy。
-      - name: 安装依赖
+      - name: 安装 Worker 依赖
         run: npm ci
+
+      - name: 安装前端依赖
+        run: npm --prefix frontend ci
 
       - name: 类型检查
         run: npx tsc --noEmit
@@ -46,6 +48,11 @@ jobs:
       # workers pool 版测试：在 ubuntu 上 workerd 二进制可用。
       - name: 单元测试
         run: npx vitest run
+
+      # 提前 build 一次，确保 Vue 源码能编译——否则要到 deploy 阶段
+      # 才发现 frontend/dist 产出不了。
+      - name: 构建前端
+        run: npm --prefix frontend run build
 
   deploy:
     needs: check
@@ -57,8 +64,16 @@ jobs:
         with:
           node-version: "22"
 
-      - name: 安装依赖
+      - name: 安装 Worker 依赖
         run: npm ci
+
+      - name: 安装前端依赖
+        run: npm --prefix frontend ci
+
+      # wrangler deploy 不会自动 build Vue，必须先产出 frontend/dist，
+      # 否则 deploy 报 assets directory 不存在。
+      - name: 构建前端
+        run: npm --prefix frontend run build
 
       - name: 部署
         run: npx wrangler deploy

@@ -31,23 +31,70 @@ APP 只持有网关签发的 `jobId`，不接触任何 GitHub 信息。
 
 ## 架构
 
+一个仓库装两层，同源部署在同一个 Worker 后面：
+
 ```
-[简盒 APP]                       [Cloudflare Worker]
-   │                                     │
-   ├─ GET  /api/workflows ───────────────┼──> GitHub: 列 workflow + 解析 inputs
-   │                                     │
-   ├─ POST /api/build ───────────────────┼──> GitHub: workflow_dispatch
-   │      {apk_url, workflow_file,       │    └─ 同步等 run_id（最多 4s）
-   │       protect_config, ...}          │    └─ 写 KV: job:<uuid>
-   │      <─ {job_id}                    │
-   │                                     │
-   ├─ GET  /api/status/:jobId ───────────┼──> 读 KV（GitHub 配额零消耗）
-   │      <─ {app_status, download_url}  │
-   │                                     │
-   │                          [Cron 每分钟] ──> 未完结任务回查 GitHub + 抓下载链接
+frontend/   Vue 3 + Vite + Element Plus + Pinia + vue-router
+            npm run build 产出 frontend/dist
+                    │
+                    ▼
+src/        Cloudflare Worker：fetch + scheduled + KV
+            [assets] 托管 frontend/dist，/api/* 由 Worker 处理
+                    │
+                    ▼
+             GitHub Actions（apk-protect-action）
 ```
 
+```
+[简盒 APP]                              [Cloudflare Worker]
+   │                                            │
+   ├─ GET  /api/workflows ──────────────────────┼──> GitHub: 列 workflow + 解析 inputs
+   ├─ POST /api/build ──────────────────────────┼──> GitHub: workflow_dispatch
+   │      <─ {job_id}                           │    └─ 同步等 run_id（最多 4s）
+   ├─ GET  /api/status/:jobId ──────────────────┼──> 读 KV（GitHub 配额零消耗）
+   │                                            │
+   │                                   [Cron 每分钟] ──> 未完结任务回查 GitHub
+   │
+[浏览器 · 管理面板]  ──> / (登录页 / SPA)  ──>  /api/jobs 等
+                        session cookie（HttpOnly）
+```
+
+**同源是关键**：前端由 Worker 的 `[assets]` 托管，`/api/*` 也在同一个
+Worker 上，因此零跨域、零 CORS 配置、一个域名搞定。`run_worker_first = true`
+让所有请求先进 Worker，`/api/*`、`/login`、`/health` 由 Worker 处理，其余
+fall through 到静态资源；`not_found_handling = "single-page-application"`
+给 vue-router 的 History 路由兜底。
+
 无 Durable Objects、无 Analytics Engine、无 migration。只有 `fetch` + `scheduled` + KV。
+
+### 目录
+
+| 路径 | 内容 |
+|---|---|
+| `frontend/` | Vue 3 前端源码（独立 npm 工程） |
+| `frontend/src/views/` | `Login.vue`（登录）、`Dashboard.vue`（控制台） |
+| `frontend/src/api/index.js` | API 封装，`credentials: same-origin` 带 cookie |
+| `frontend/src/stores/` | Pinia：`auth`（登录态）、`job`（任务列表） |
+| `src/` | Worker 后端逻辑 |
+| `src/router.ts` | fetch 入口：CORS + 双通道鉴权 + 路由表 + Cron |
+| `src/ui.ts` | 登录页 HTML + session cookie 签发/校验 |
+| `src/jobs.ts` | `GET /api/jobs`（管理台任务列表） |
+| `src/github.ts` | GitHub REST 最小客户端 + yml inputs 解析 |
+| `src/build.ts` | `POST /api/build`：dispatch + 同步等 run_id |
+| `src/status.ts` | `GET /api/status/:jobId`：读 KV + 读缺失回查 |
+| `src/reconcile.ts` | Cron 兜底轮询 |
+| `src/kv_store.ts` | 任务表 KV 读写 |
+
+### 鉴权：两条通道
+
+`/api/*` 接受任一：
+
+1. **`Authorization: Bearer <RELAY_TOKEN>`** —— APP / 脚本等机器调用方
+2. **`relay_session` cookie（HttpOnly）** —— 浏览器里的管理面板
+
+cookie 由 `POST /login` 种下，HMAC-SHA256 签名、密钥是 `RELAY_TOKEN`。
+好处是前端 JS 碰不到令牌（XSS 偷不走），且旋转 `RELAY_TOKEN` 立即
+注销所有会话。
 
 ## 接口
 
@@ -207,11 +254,17 @@ curl https://edge-relay.wu.engineer/health
 
 ## 部署
 
+**注意：`wrangler deploy` 不会自动构建 Vue。** 必须先产出
+`frontend/dist`，否则 deploy 报 assets directory 不存在。仓库里的
+`npm run deploy` 已经串好了这一步（先 `build:frontend` 再 `wrangler deploy`），
+所以下面的命令统一用 `npm run deploy` 而不是裸 `npx wrangler deploy`。
+
 两条路，选一条（别同时开，否则 push 会触发两次部署）：
 
 **A. Cloudflare Workers Builds（控制台配，push 自动 `npx wrangler deploy`）**
 在 CF 控制台 Workers → 你的 Worker → Settings → Build 里连 Git 仓库。
-部署命令填 `npx wrangler deploy`，Node 版本 22。
+部署命令填 `npm run deploy`（**不是** `npx wrangler deploy`——那样不会
+构建前端），Node 版本 22。
 
 **B. GitHub Actions（`.github/workflows/deploy.yml`，配置可见可 review）**
 push 到 main 自动跑：类型检查 → 单元测试 → 部署。
@@ -227,7 +280,8 @@ npx wrangler kv namespace create EDGE_RELAY_KV
 
 # 2. 设 secrets（绝不进 git、绝不下发到 APP）
 npx wrangler secret put GITHUB_TOKEN      # apk-protect-action 的 Actions:Read+Write 令牌
-npx wrangler secret put RELAY_TOKEN       # 网关调用方令牌，APP 与后台面板共用
+npx wrangler secret put RELAY_TOKEN       # 网关调用方令牌 + 会话签名密钥
+npx wrangler secret put RELAY_PASSWORD    # 管理面板登录密码（不配则 /login 报 500）
 npx wrangler secret put R2_PUBLIC_DOMAIN  # 可选，注解打码补全用
 ```
 
@@ -265,29 +319,21 @@ npx wrangler secret put R2_PUBLIC_DOMAIN  # 可选，注解打码补全用
 ## 本地开发
 
 ```bash
-npm install --ignore-scripts   # workerd 无 Android 构建，必须 --ignore-scripts
-npx tsc --noEmit               # 类型检查
-npx vitest run --config vitest.node.config.ts   # 本机（Node 环境）跑测试
-npx wrangler dev               # 起本地 Worker（需要 PC，本机跑不了 workerd）
+# 后端（Termux 上可跑：tsc / vitest 不依赖 workerd）
+npm install --ignore-scripts        # --ignore-scripts 必须加，workerd 无 Android 构建
+npx tsc --noEmit                    # 类型检查
+npm test                            # 测试（node environment）
+npm run build:frontend              # 构建 Vue 前端
+npx wrangler dev                    # 起本地 Worker（需要 PC，本机跑不了 workerd）
 ```
 
 > `vitest.config.ts`（workers pool）给 CI / PC 用；
 > `vitest.node.config.ts`（node environment）给 Termux 用。
+> 被测代码只用 Web 标准 API，两个环境跑同一批断言。
+
+> `vitest.config.ts`（workers pool）给 CI / PC 用；
+> `vitest.node.config.ts`（node environment）给 Termux 用。
 > 被测代码只用 Web 标准 API，两个环境跑的是同一批断言。
-
-## 文件
-
-| 文件 | 职责 |
-|---|---|
-| `src/index.ts` | 入口，转出 `src/router.ts` |
-| `src/router.ts` | fetch 入口：CORS + 鉴权 + 限流 + 路由表 + Cron |
-| `src/types.ts` | Env / 请求 / 响应类型 |
-| `src/github.ts` | GitHub REST 最小客户端 + yml inputs 解析 |
-| `src/build.ts` | `POST /api/build`：dispatch + 同步等 run_id |
-| `src/status.ts` | `GET /api/status/:jobId`：读 KV + 读缺失回查 |
-| `src/workflows.ts` | `GET /api/workflows` |
-| `src/reconcile.ts` | Cron 兜底轮询 |
-| `src/kv_store.ts` | 任务表 KV 读写 |
 
 ## 已知边界
 
