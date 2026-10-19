@@ -1,31 +1,33 @@
-# EdgeRelay — push 自动类型检查 + 前端构建 + 部署
+# EdgeRelay — push 自动验证 + 部署
 #
-# 触发：push 到 main，或在 Actions 页手动触发。
+# 两个 job：
+#   verify  — 装依赖、类型检查、单元测试、构建前端。无条件运行，
+#             不需要任何 secret。代码坏了这一步就红，挡不住部署也能挡合并。
+#   deploy  — 只有 verify 通过才跑，且只在仓库配了 CF_API_TOKEN 时才有意义。
 #
-# 部署需要两个 repo secrets：
-#   CF_API_TOKEN   — Cloudflare API token，权限 "Workers Scripts: Edit"
+# 需要的 repo secrets（缺了 deploy 会失败，verify 不受影响）：
+#   CF_API_TOKEN        — Cloudflare API token，权限 "Workers Scripts: Edit"
 #   CLOUDFLARE_ACCOUNT_ID — 账号 id
 #
-# 另外三个 secret 在首次部署前用 wrangler 设置（不进 git、不进 CI）：
-#   npx wrangler secret put GITHUB_TOKEN
-#   npx wrangler secret put RELAY_TOKEN
-#   npx wrangler secret put RELAY_PASSWORD   # 管理面板登录密码
-#   npx wrangler secret put R2_PUBLIC_DOMAIN # 可选
+# 如果你在用 Cloudflare Workers Builds（控制台连 Git 自动部署），
+# 这个 workflow 是冗余的——去控制台关掉，或删掉本文件，否则一次 push
+# 会触发两次部署。
 
-name: EdgeRelay deploy
+name: EdgeRelay
 
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
-# 同一时刻只允许一个部署，避免并发 deploy 互相覆盖。
 concurrency:
-  group: edge-relay-deploy
-  cancel-in-progress: false
+  group: edge-relay-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  check:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,8 +36,8 @@ jobs:
         with:
           node-version: "22"
 
-      # npm ci 需要 package-lock.json 与 package.json 同步；不同步会让这里
-      # 直接失败，从而挡住一个装不出依赖的 deploy。
+      # npm ci 需要 lock 文件与 package.json 同步；不同步直接失败，
+      # 挡住一个装不出依赖的部署。
       - name: 安装 Worker 依赖
         run: npm ci
 
@@ -45,17 +47,18 @@ jobs:
       - name: 类型检查
         run: npx tsc --noEmit
 
-      # workers pool 版测试：在 ubuntu 上 workerd 二进制可用。
+      # workers pool 版：ubuntu 上 workerd 二进制可用。
       - name: 单元测试
         run: npx vitest run
 
-      # 提前 build 一次，确保 Vue 源码能编译——否则要到 deploy 阶段
-      # 才发现 frontend/dist 产出不了。
+      # 提前构建一次，确保 Vue 源码编译得过——否则要到部署阶段才发现。
       - name: 构建前端
         run: npm --prefix frontend run build
 
   deploy:
-    needs: check
+    needs: verify
+    # 只在 push 到 main 时部署；PR 只验证不部署。
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -70,8 +73,7 @@ jobs:
       - name: 安装前端依赖
         run: npm --prefix frontend ci
 
-      # wrangler deploy 不会自动 build Vue，必须先产出 frontend/dist，
-      # 否则 deploy 报 assets directory 不存在。
+      # wrangler deploy 不构建 Vue，必须先产出 frontend/dist。
       - name: 构建前端
         run: npm --prefix frontend run build
 

@@ -254,17 +254,43 @@ curl https://edge-relay.wu.engineer/health
 
 ## 部署
 
-**注意：`wrangler deploy` 不会自动构建 Vue。** 必须先产出
-`frontend/dist`，否则 deploy 报 assets directory 不存在。仓库里的
-`npm run deploy` 已经串好了这一步（先 `build:frontend` 再 `wrangler deploy`），
-所以下面的命令统一用 `npm run deploy` 而不是裸 `npx wrangler deploy`。
+**`wrangler deploy` 不会构建 Vue。** 它只检查 `frontend/dist` 存在，不存在就：
 
-两条路，选一条（别同时开，否则 push 会触发两次部署）：
+```
+✘ [ERROR] The directory specified by the "assets.directory" field in your
+  configuration file does not exist: /opt/buildhome/repo/frontend/dist
+```
+
+所以构建这一步必须由部署流程显式触发。下面两条路都能做到，**选一条**。
+
+### A. Cloudflare Workers Builds（当前在用）
+
+控制台 → Worker → Settings → Build，**两个字段都要填**：
+
+| 字段 | 填什么 |
+|---|---|
+| **Build command** | `npm --prefix frontend run build` |
+| **Deploy command** | `npx wrangler deploy` |
+
+只填 Deploy command 是不行的——那是默认值，不会碰前端。Root directory
+留空（仓库根就是根）。
+
+### B. GitHub Actions（`.github/workflows/deploy.yml`）
+
+push 到 main 自动跑：装依赖 → 类型检查 → 单元测试 → 构建前端 → 部署。
+需要 repo secrets：`CF_API_TOKEN`（权限 Workers Scripts: Edit）和
+`CLOUDFLARE_ACCOUNT_ID`。
+
+**两条路别同时开**，否则一次 push 触发两次部署。
+
+> 为什么没把 `frontend/dist` 提交进 git：那样 Build command 留空也能通，
+> 但改了 Vue 源码忘了 build 就会静默部署旧前端，没有任何报错。
+> 宁可让构建命令配错时明确失败。
 
 **A. Cloudflare Workers Builds（控制台配，push 自动 `npx wrangler deploy`）**
 在 CF 控制台 Workers → 你的 Worker → Settings → Build 里连 Git 仓库。
-部署命令填 `npm run deploy`（**不是** `npx wrangler deploy`——那样不会
-构建前端），Node 版本 22。
+Build command 填 `npm --prefix frontend run build`，Deploy command 填
+`npx wrangler deploy`。Node 版本 22。
 
 **B. GitHub Actions（`.github/workflows/deploy.yml`，配置可见可 review）**
 push 到 main 自动跑：类型检查 → 单元测试 → 部署。
