@@ -1,0 +1,67 @@
+# EdgeRelay — push 自动类型检查 + 部署
+#
+# 触发：push 到 main，或在 Actions 页手动触发。
+#
+# 部署需要两个 repo secrets：
+#   CF_API_TOKEN   — Cloudflare API token，权限 "Workers Scripts: Edit"
+#                     （Account → API Tokens → Create Token → Edit Cloudflare
+#                      Workers 模板）。不要用 Global API Key。
+#   CLOUDFLARE_ACCOUNT_ID — 账号 id（Workers 面板右侧栏可见）
+#
+# 另外三个 secret 在首次部署前用 wrangler 设置（不进 git、不进 CI）：
+#   npx wrangler secret put GITHUB_TOKEN
+#   npx wrangler secret put RELAY_TOKEN
+#   npx wrangler secret put R2_PUBLIC_DOMAIN   # 可选
+
+name: EdgeRelay deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# 同一时刻只允许一个部署，避免并发 deploy 互相覆盖。
+concurrency:
+  group: edge-relay-deploy
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # npm ci 需要 package-lock.json 与 package.json 同步；不同步会让这里
+      # 直接失败，从而挡住一个装不出依赖的 deploy。
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 类型检查
+        run: npx tsc --noEmit
+
+      # workers pool 版测试：在 ubuntu 上 workerd 二进制可用。
+      - name: 单元测试
+        run: npx vitest run
+
+  deploy:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 部署
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

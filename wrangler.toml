@@ -23,10 +23,17 @@ workers_dev = true
 
 # ── KV：任务表 ───────────────────────────────────────────────────────
 # key = job:<uuid>，value = BuildJob JSON，TTL 见 JOB_RETENTION_DAYS。
-# 创建：wrangler kv namespace create BUILD_JOBS
+#
+# namespace id 可以直接提交进 git：它不是 secret（KV namespace id 只是
+# 一个标识符，访问控制靠 account 级的 API token）。不要试图用 ${VAR}
+# 环境变量替换——wrangler 不支持该语法，会导致 deploy 直接失败。
+#
+# 创建 namespace：
+#   npx wrangler kv namespace create BUILD_JOBS
+# 把输出的 id 填到下面。
 [[kv_namespaces]]
 binding = "BUILD_JOBS"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "PASTE_KV_NAMESPACE_ID_HERE"
 
 # ── Cron：每分钟兜底轮询未完结任务 ───────────────────────────────────
 # 1 分钟是 Cloudflare Cron 支持的最小粒度。APP 轮询 /api/status 只读

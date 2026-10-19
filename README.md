@@ -182,23 +182,35 @@ curl -H "Authorization: Bearer $RELAY_TOKEN" \
 
 ## 部署
 
-```bash
-cd <repo>
+两条路，选一条（别同时开，否则 push 会触发两次部署）：
 
-# 1. 建 KV namespace，把返回的 id 填进 wrangler.toml 的 [[kv_namespaces]]
+**A. Cloudflare Workers Builds（控制台配，push 自动 `npx wrangler deploy`）**
+在 CF 控制台 Workers → 你的 Worker → Settings → Build 里连 Git 仓库。
+部署命令填 `npx wrangler deploy`，Node 版本 22。
+
+**B. GitHub Actions（`.github/workflows/deploy.yml`，配置可见可 review）**
+push 到 main 自动跑：类型检查 → 单元测试 → 部署。
+需要 repo secrets：`CF_API_TOKEN`（权限 Workers Scripts: Edit）和
+`CLOUDFLARE_ACCOUNT_ID`。
+
+两条路之前都要做一次：
+
+```bash
+# 1. 建 KV namespace，把输出的 id 填进 wrangler.toml 的 [[kv_namespaces]]
+#    （namespace id 不是 secret，可以直接提交；wrangler 不支持 ${VAR} 语法）
 npx wrangler kv namespace create BUILD_JOBS
 
 # 2. 设 secrets（绝不进 git、绝不下发到 APP）
 npx wrangler secret put GITHUB_TOKEN      # apk-protect-action 的 Actions:Read+Write 令牌
 npx wrangler secret put RELAY_TOKEN       # 网关调用方令牌，APP 与后台面板共用
 npx wrangler secret put R2_PUBLIC_DOMAIN  # 可选，注解打码补全用
-
-# 3. 部署
-npx wrangler deploy
 ```
 
 `wrangler.toml` 里 `GITHUB_OWNER` / `GITHUB_REPO` 放在 `[vars]` 而非 secret：
 仓库坐标本身不敏感，敏感的是令牌。
+
+**注意**：`package-lock.json` 必须提交。CI 用 `npm ci`，锁文件缺失或与
+`package.json` 不同步会直接失败——这是有意的，用来挡住装不出依赖的部署。
 
 ## 配置项
 
