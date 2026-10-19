@@ -7,11 +7,11 @@ export default defineWorkersConfig({
         wrangler: { configPath: "./wrangler.toml" },
         miniflare: {
           bindings: {
-            PROXY_COORDINATOR_TOKEN: "test-token",
-            NUM_CLAIM_SHARDS: "1",
-            // W5.1 — dashboard password seeded for the login-flow tests.
-            DASHBOARD_PASSWORD: "test-dash-password",
+            GITHUB_TOKEN: "test-github-token",
+            RELAY_TOKEN: "test-relay-token",
+            // GITHUB_OWNER / GITHUB_REPO 由 wrangler.toml [vars] 提供。
           },
+          kvNamespaces: ["BUILD_JOBS"],
         },
       },
     },

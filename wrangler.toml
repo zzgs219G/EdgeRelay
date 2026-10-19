@@ -1,231 +1,71 @@
-# wrangler.toml
-name = 'edge-relay'
+# EdgeRelay — APK 构建网关
+#
+# 由原 ProxyCoordinator（JAVDB 爬虫调度器）重构而来。现在它是
+# jian_box APP 的后端：把原先散在 APP 里的 GitHub Token / 仓库地址 /
+# run 轮询逻辑整体搬到 Worker 后面，APP 只持有网关签发的 jobId。
+#
+# 无 Durable Objects、无 Analytics Engine、无 migration —— 纯
+# fetch + KV + Cron。
+
+name = "edge-relay"
 main = "src/index.ts"
-compatibility_date = "2026-10-19"
+compatibility_date = "2026-10-20"
 compatibility_flags = ["nodejs_compat"]
 
-# Wrangler infers `workers_dev = false` whenever `[[routes]]` is present unless
-# you set this explicitly — keep the `*.workers.dev` URL active in parallel.
-workers_dev = true
-
-# Public hostname on the wu.engineer zone (Custom Domain — Wrangler provisions
-# DNS + edge TLS on deploy; zone must live in this Cloudflare account).
+# 自定义域名（Wrangler 会代配 DNS + 边缘 TLS）。
+# zone 必须位于当前 Cloudflare 账号下。
 [[routes]]
-pattern = "proxy-coordinator.wu.engineer"
+pattern = "edge-relay.wu.engineer"
 custom_domain = true
 
-# SQLite-backed Durable Object classes.  Required on the Workers Free plan
-# (only SQLite-backed DOs are available there; KV-backed DOs require Paid).
-[[durable_objects.bindings]]
-name = "PROXY_DO"
-class_name = "ProxyCoordinator"
+# 同时保留 *.workers.dev 入口，便于迁移期双跑。
+workers_dev = true
 
-# Singleton DO that arbitrates JavDB login state across multiple GH Actions
-# runners.  Addressed by `idFromName("global")` so every runner converges on
-# the same instance.  See src/global_login_state.ts.
-[[durable_objects.bindings]]
-name = "GLOBAL_LOGIN_STATE_DO"
-class_name = "GlobalLoginState"
+# ── KV：任务表 ───────────────────────────────────────────────────────
+# key = job:<uuid>，value = BuildJob JSON，TTL 见 JOB_RETENTION_DAYS。
+# 创建：wrangler kv namespace create BUILD_JOBS
+[[kv_namespaces]]
+binding = "BUILD_JOBS"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
 
-# Per-day-sharded DO that arbitrates JavDB detail-page fetches across multiple
-# GH Actions runners.  Addressed by `idFromName("YYYY-MM-DD")` so a single
-# day's claims live in one DO instance and old shards naturally evict via
-# the Cloudflare DO LRU.  See src/movie_claim_state.ts.
-[[durable_objects.bindings]]
-name = "MOVIE_CLAIM_DO"
-class_name = "MovieClaimState"
+# ── Cron：每分钟兜底轮询未完结任务 ───────────────────────────────────
+# 1 分钟是 Cloudflare Cron 支持的最小粒度。APP 轮询 /api/status 只读
+# KV，GitHub 调用集中在这里，配额消耗与 APP 轮询频率解耦。
+[triggers]
+crons = ["* * * * *"]
 
-# Singleton runner-registry DO (P2-E).  Tracks live spider runners across
-# GH Actions workflow runs for ops visibility + proxy_pool_hash drift
-# detection (which subsumes the originally-planned P3-B drift DO).
-# Addressed by `idFromName("runners")`.  See src/runner_registry.ts.
-[[durable_objects.bindings]]
-name = "RUNNER_REGISTRY_DO"
-class_name = "RunnerRegistry"
-
-# W5.3 — singleton config DO. Holds operator-tunable runtime parameters
-# (throttle windows, ban TTLs, heartbeat interval, ...) that runners pull
-# on every register / heartbeat response. Addressed by
-# `idFromName("global-config")`. See src/config_state.ts.
-[[durable_objects.bindings]]
-name = "CONFIG_STATE_DO"
-class_name = "ConfigState"
-
-# W5.2 — singleton work-distribution DO. Active queue with visibility
-# leases; coexists with MovieClaim as defence-in-depth. Addressed by
-# `idFromName("global-work")`. See src/work_distributor.ts.
-[[durable_objects.bindings]]
-name = "WORK_DISTRIBUTOR_DO"
-class_name = "WorkDistributor"
-
-# W5.7 / ADR-003 — singleton MetricsState DO. Stores periodic
-# JSON snapshots of the full /ops/snapshot payload for dashboard
-# time-series charts and history drill-downs. Addressed by
-# `idFromName("global-metrics")`. See src/metrics_state.ts.
-[[durable_objects.bindings]]
-name = "METRICS_STATE_DO"
-class_name = "MetricsState"
-
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["ProxyCoordinator"]
-
-# v2 introduces the GlobalLoginState class.  Wrangler applies migrations in
-# tag order; never reorder or delete v1 — that would re-create the per-proxy
-# DO from scratch and lose its persisted throttle history.
-[[migrations]]
-tag = "v2"
-new_sqlite_classes = ["GlobalLoginState"]
-
-# v3 introduces both the MovieClaimState (P1-B) and RunnerRegistry (P2-E)
-# classes — wrangler accepts multiple classes per migration tag, so a single
-# `wrangler deploy` rolls both out atomically.  Append only — never edit
-# the array in-place once deployed (would re-create the DOs from scratch
-# and lose persisted state).  Future P2-A schema additions live inside
-# MovieClaimState's storage layout and do not require a new migration.
-[[migrations]]
-tag = "v3"
-new_sqlite_classes = ["MovieClaimState", "RunnerRegistry"]
-
-# v4 — W5.3 ConfigState singleton. Stores operator-tunable runtime
-# parameters and surfaces them on every register / heartbeat response.
-[[migrations]]
-tag = "v4"
-new_sqlite_classes = ["ConfigState"]
-
-# v5 — W5.2 WorkDistributor singleton. Active dedup'd FIFO queue with
-# visibility leases (5-min default); coexists with MovieClaim as
-# defence-in-depth.
-[[migrations]]
-tag = "v5"
-new_sqlite_classes = ["WorkDistributor"]
-
-# v6 — W5.7 / ADR-003 MetricsState singleton. Stores time-series
-# JSON snapshots of /ops/snapshot for dashboard charts and history.
-[[migrations]]
-tag = "v6"
-new_sqlite_classes = ["MetricsState"]
-
-# Workers Analytics Engine for per-lease metrics (free tier: 100k data points/day).
-#
-# DISABLED BY DEFAULT because Analytics Engine requires a one-time
-# manual opt-in in the Cloudflare Dashboard before any Worker can bind
-# to it.  Without that opt-in `wrangler deploy` fails with:
-#   "You need to enable Analytics Engine. Head to the Cloudflare Dashboard..."
-#
-# To enable observability:
-#   1. Open the URL printed in the deploy error (or
-#      https://dash.cloudflare.com/<account-id>/workers/analytics-engine )
-#      and click "Enable Analytics Engine".
-#   2. Uncomment the block below.
-#   3. Re-run `npx wrangler deploy`.
-#
-# The Worker's analytics writes are guarded by `if (!env.LEASE_ANALYTICS)`
-# so leaving this commented out has zero functional impact — only the
-# `proxy_coordinator_leases` dataset is unavailable for observability.
-[[analytics_engine_datasets]]
-binding = "LEASE_ANALYTICS"
-dataset = "proxy_coordinator_leases"
-
-# Workers Logs (observability)
 [observability]
 enabled = true
 head_sampling_rate = 1.0
 
-# `wrangler dev` exposes the Worker on http://localhost:8787 by default.
-# Logs are streamed to the terminal; use `--local` for full in-memory mode
-# (no Cloudflare account / API token required).
 [dev]
 port = 8787
 
-# W5.7 / ADR-003 — every 1 min, the scheduled handler pulls the
-# current /ops/snapshot payload and writes it to MetricsState DO
-# (subject to idle suppression). 1 min is the minimum interval
-# Cloudflare Cron supports; dashboard 5s polling provides finer
-# resolution when an operator is actively viewing.
-[triggers]
-crons = ["* * * * *"]
-
-# Optional vars (non-secret).  Tuning the throttle windows here lets ops
-# adjust limits without redeploying client code.  Defaults match the Python
-# `TripleWindowThrottle` (30s/3, 300s/30, 1800s/200) and the Penalty TIERS
-# (1→1.30, 2→1.65, 4→2.00).
+# ── 非密配置 ─────────────────────────────────────────────────────────
 [vars]
-SHORT_WINDOW_SEC = "30"
-SHORT_MAX = "3"
-LONG_WINDOW_SEC = "300"
-LONG_MAX = "30"
-EXTRA_WINDOW_SEC = "1800"
-EXTRA_MAX = "200"
-PENALTY_WINDOW_SEC = "300"
-# ADR-023 Phase 2 - recommendation ranking mode.
-# "shadow" (default): /recommend_proxy keeps existing heuristic ordering and
-# only returns policy fields for observability.
-# "policy": /recommend_proxy sorts by blended policy rank_score.
-RECOMMEND_PROXY_POLICY_MODE = "shadow"
-# Minimum rank score for available proxies in policy mode. Keeps a small
-# exploration floor so recovered proxies are not permanently starved.
-RECOMMEND_PROXY_EXPLORATION_FLOOR = "0.02"
-JITTER_MAX_MS = "500"
-# P1-A — default ban duration (3 days). Override per-deploy without
-# touching client code.  Clients may also pass `ttl_ms` per /report, in
-# which case this fallback is unused.
-BAN_TTL_MS = "259200000"
-# ADR-043 — Worker-side CF auto-ban defaults ON; set
-# CF_AUTO_BAN_ENABLED = "false" as a kill-switch if the signal is noisy.
-CF_AUTO_BAN_ENABLED = "true"
-CF_AUTO_BAN_THRESHOLD = "6"
-CF_BAN_TTL_MS = "21600000"   # 6 hours
-# ADR-043 D9 — explicit JavDB IP-ban TTL (hard ban window + 1 day margin).
-HARD_BAN_TTL_MS = "691200000"   # 8 days
-# P1-B — default per-claim TTL for MovieClaimState (30 min).  Sized to
-# cover detail-page fetch + parser + qB add for a slow proxy without
-# locking the slot if the runner crashes (DO Alarm GC sweeps stale
-# claims every 10 min regardless).
-MOVIE_CLAIM_TTL_MS = "1800000"
-# P2-E — staleness threshold for RunnerRegistry GC.  Runners whose
-# `last_heartbeat` is older than this are evicted by the singleton DO's
-# 5 min alarm.  10 min default = 5x the canonical 60 s heartbeat cadence
-# so a single missed heartbeat doesn't evict a healthy runner.  Server
-# floors the value at 60 s defensively if a typo is set here.
-RUNNER_STALE_TTL_MS = "600000"
-# Minimum live-runner count at which the registry recommends enabling
-# the per-day MovieClaim mutex.  Used by RunnerRegistry to derive the
-# `movie_claim_recommended` flag returned on every register / heartbeat
-# response — Python clients in `auto` mode follow this signal to mount /
-# unmount their MovieClaimClient automatically.  Default 2: a single
-# runner doesn't benefit from claim coordination; two or more runners do.
-MOVIE_CLAIM_MIN_RUNNERS = "2"
-# P2-C — login attempt cooldown knobs (cross-runner login budget).
-# Counted within `LOGIN_COOLDOWN_WINDOW_SEC`; once recent FAILURES reach
-# `LOGIN_COOLDOWN_THRESHOLD`, `acquire_lease` returns a non-zero
-# `cooldown_until_ms` (still grants the lease — caller parks its login
-# flow until the cooldown expires).  Defaults: 5 failures / hour →
-# 30 min cooldown.  Override per-deploy without touching client code.
-LOGIN_COOLDOWN_THRESHOLD = "5"
-LOGIN_COOLDOWN_WINDOW_SEC = "3600"
-LOGIN_COOLDOWN_DURATION_MS = "1800000"
-# W5.6 — Worker-level token-bucket rate limit. Caps authorised requests
-# per minute per Bearer token to guard against burst abuse from a single
-# runner. State is per-Worker-isolate and resets on cold start; not a
-# strict SLO but enough to catch runaway clients. Default 1000/min ≈
-# 16.7 req/s, well above the spider's typical sustained rate (one
-# detail-page lease every 10 s × 5 workers = 0.5 req/s).
-# Set to "0" to disable (e.g. in load tests).
-WORKER_RATE_LIMIT_PER_MIN = "1000"
-# W5.7 / ADR-003 — MetricsState retention. Snapshots older than this
-# are purged on every GC alarm. Default 30 days. Set to "0" to disable
-# retention sweep entirely (debug only).
-METRICS_RETENTION_DAYS = "30"
-# Hard cap on row count regardless of age. Defence against
-# misconfigured idle suppression. Default 100k.
-METRICS_MAX_ROWS = "100000"
+# 触发分支（apk-protect-action 的默认分支）。
+GITHUB_REF = "main"
 
-# W5.7 / ADR-002 — event-log retention per kind.
-SIGNALS_EVENT_LOG_RETENTION_DAYS = "90"
-RUNNERS_EVENT_LOG_RETENTION_DAYS = "90"
-LOGIN_EVENT_LOG_RETENTION_DAYS = "30"
-CONFIG_AUDIT_LOG_RETENTION_DAYS = "365"
+# 仓库坐标。放在 [vars] 而非 secret：仓库地址本身不敏感，
+# 敏感的是 GITHUB_TOKEN（wrangler secret put 设置）。
+GITHUB_OWNER = "zzgs219G"
+GITHUB_REPO = "apk-protect-action"
 
-# Secrets (set via `wrangler secret put`):
-#   PROXY_COORDINATOR_TOKEN — bearer token required on every /lease, /report
+# per-token 令牌桶容量（次/分钟）。APP 轮询 + 后台面板共用。
+# 典型负载：5s 轮询 × 10 分钟/任务 ≈ 120 次，远低于此值。
+# 设 "0" 关闭（压测用）。
+RATE_LIMIT_PER_MIN = "120"
+
+# 任务记录保留天数（KV TTL）。7 天足够覆盖排查与复查。
+JOB_RETENTION_DAYS = "7"
+
+# dispatch 后等待 run_id 出现的最大毫秒数。
+# GitHub 通常 1-2s 内即可在 runs 列表看到；4s 是留了余量的上限。
+# 超时不失败，job 以 queued 返回，由 cron 补绑。
+RUN_ID_WAIT_MS = "4000"
+
+# Secrets（wrangler secret put 设置，绝不进 git / 前端）：
+#   GITHUB_TOKEN      — apk-protect-action 的 Actions:Read+Write 令牌
+#   RELAY_TOKEN       — 网关调用方令牌（APP 与后台面板共用）
+#   R2_PUBLIC_DOMAIN  — 可选。注解里域名被 GitHub 打码成 *** 时用于补全，
+#                        如 https://your-r2-domain.example
