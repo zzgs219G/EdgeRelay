@@ -15,6 +15,7 @@ import {
   describeGitHubError,
   fetchArtifactUrl,
   fetchDownloadUrlFromAnnotations,
+  fetchLogArtifactUrl,
   getRun,
   GitHubError,
   listRecentRuns,
@@ -81,10 +82,13 @@ async function refreshInProgress(env: Env, job: BuildJob): Promise<void> {
     run.conclusion === "success"
       ? (await fetchDownloadUrlFromAnnotations(env, run.run_id)) ?? (await fetchArtifactUrl(env, job.run_id))
       : null;
+  // 日志与成败无关：失败时更要看，所以无条件抓
+  const logUrl = await fetchLogArtifactUrl(env, run.run_id);
   await patchJob(env, job.job_id, {
     status: "completed",
     conclusion: run.conclusion,
     download_url: downloadUrl,
+    log_url: logUrl,
     error: run.conclusion === "success" ? null : `流水线以 ${run.conclusion ?? "unknown"} 结束`,
   });
 }

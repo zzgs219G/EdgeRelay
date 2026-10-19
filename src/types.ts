@@ -45,6 +45,12 @@ export interface BuildJob {
   conclusion: string | null;
   /** 产物下载链接（R2 公开直链）；未产出为 null。 */
   download_url: string | null;
+  /**
+   * 构建日志 artifact 的下载地址。
+   * 日志是 `if: always()` 上传的，失败的任务也有——排障最需要它。
+   * 下载需 GitHub 令牌，所以面板通过网关代理下载（见 /api/log/:jobId）。
+   */
+  log_url?: string | null;
   /** 失败时的人类可读原因。 */
   error: string | null;
   created_at_ms: number;

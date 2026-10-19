@@ -526,18 +526,79 @@ export async function fetchDownloadUrlFromAnnotations(
 }
 
 /** 注解抓不到时退回 run 的第一个 artifact 下载地址。 */
-export async function fetchArtifactUrl(
+/** run 的 artifact 清单。 */
+export interface ArtifactInfo {
+  name: string;
+  /** 下载需要 GitHub 令牌，APP 拿不到——面板侧走自己的鉴权。 */
+  archive_download_url: string;
+  size_in_bytes: number;
+  expired: boolean;
+}
+
+/**
+ * 列出 run 的全部 artifact。
+ *
+ * 早期实现只取 `artifacts[0]`，但那是不安全的假设——流水线会上传两个
+ * artifact（构建日志 + 加固包），返回顺序不保证，可能把日志当成产物
+ * 链接给用户。
+ */
+export async function listArtifacts(
   env: Env,
   runId: number,
-): Promise<string | null> {
+): Promise<ArtifactInfo[]> {
   try {
     const resp = await ghFetch(
       env,
       `/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/runs/${runId}/artifacts`,
     );
-    const data = (await resp.json()) as { artifacts?: { archive_download_url: string }[] };
-    return data.artifacts?.[0]?.archive_download_url ?? null;
+    const data = (await resp.json()) as {
+      artifacts?: {
+        name: string;
+        archive_download_url: string;
+        size_in_bytes: number;
+        expired: boolean;
+      }[];
+    };
+    return (data.artifacts ?? []).map((a) => ({
+      name: a.name,
+      archive_download_url: a.archive_download_url,
+      size_in_bytes: a.size_in_bytes,
+      expired: a.expired,
+    }));
   } catch {
-    return null;
+    return [];
   }
+}
+
+/** 构建日志 artifact 的名字（与 protect-modules.yml 保持一致）。 */
+export const LOG_ARTIFACT_NAME = "构建日志-build.log";
+
+/**
+ * 找构建日志 artifact 的下载地址。
+ *
+ * 日志是 `if: always()` 上传的，所以**失败的任务也有日志**——这正是
+ * 排障最需要的场景。
+ */
+export async function fetchLogArtifactUrl(
+  env: Env,
+  runId: number,
+): Promise<string | null> {
+  const artifacts = await listArtifacts(env, runId);
+  const hit = artifacts.find((a) => a.name === LOG_ARTIFACT_NAME && !a.expired);
+  return hit?.archive_download_url ?? null;
+}
+
+/**
+ * 找加固产物 artifact 的下载地址（R2 链接抓不到时的兜底）。
+ *
+ * 只排除日志，不按精确名匹配——产物名可能随流水线改动，
+ * 而日志名是固定的。
+ */
+export async function fetchArtifactUrl(
+  env: Env,
+  runId: number,
+): Promise<string | null> {
+  const artifacts = await listArtifacts(env, runId);
+  const hit = artifacts.find((a) => a.name !== LOG_ARTIFACT_NAME && !a.expired);
+  return hit?.archive_download_url ?? null;
 }

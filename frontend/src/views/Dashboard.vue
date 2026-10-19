@@ -197,8 +197,13 @@
                   {{ j.modules?.length ? j.modules.join(' · ') : j.workflow_file }}
                 </div>
                 <div class="text-[11px] text-gray-400 font-mono truncate-1">
-                  {{ j.job_id.slice(0, 8) }}
-                  <span v-if="j.modules?.length" class="not-italic opacity-70">
+                  <!-- 这是网关签发的任务 ID，不是 GitHub 的 run_id。
+                       APP 和网关都用它定位任务；run_id 只存服务端。 -->
+                  <span
+                    class="cursor-help"
+                    title="任务 ID（网关签发，非 GitHub run_id）"
+                  >{{ j.job_id.slice(0, 8) }}</span>
+                  <span v-if="j.modules?.length" class="opacity-70">
                     · {{ j.workflow_file }}
                   </span>
                 </div>
@@ -215,21 +220,40 @@
               </div>
             </div>
 
-            <div
-              v-if="j.download_url || j.error"
-              class="flex items-center justify-between pt-3 border-t border-gray-50"
+            <!-- 错误信息独占一行（可能较长） -->
+            <p
+              v-if="j.error"
+              class="text-[11px] text-red-500 leading-relaxed pt-3 border-t border-gray-50"
             >
+              {{ j.error }}
+            </p>
+
+            <!-- 操作按钮：右对齐，产物与日志并排 -->
+            <div
+              v-if="j.download_url || j.can_log"
+              class="flex items-center justify-end gap-2 pt-3"
+              :class="j.error ? 'mt-2' : 'border-t border-gray-50'"
+            >
+              <a
+                v-if="j.can_log"
+                :href="`/api/log/${j.job_id}`"
+                class="inline-flex items-center text-xs font-bold text-slate-600 bg-slate-100
+                       px-3 py-2 rounded-lg active:scale-95 transition"
+                title="构建日志（失败的任务也有）"
+              >
+                <i class="ri-file-text-line mr-1 text-base" /> 日志
+              </a>
               <a
                 v-if="j.download_url"
                 :href="j.download_url"
                 target="_blank"
                 rel="noopener"
-                class="inline-flex items-center text-xs font-bold text-blue-600 bg-blue-50
-                       px-3 py-2 rounded-lg active:scale-95 transition"
+                class="inline-flex items-center text-xs font-bold text-white bg-blue-500
+                       px-3 py-2 rounded-lg active:scale-95 transition
+                       shadow-[0_2px_8px_rgba(59,130,246,0.35)]"
               >
                 <i class="ri-download-2-line mr-1 text-base" /> 下载产物
               </a>
-              <span v-else class="text-[11px] text-red-500 leading-snug">{{ j.error }}</span>
             </div>
           </div>
         </div>

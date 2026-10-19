@@ -23,6 +23,7 @@ import { handleListJobs } from "./jobs";
 import { handleGetConfig, handlePatchConfig } from "./config_api";
 import { handlePresign } from "./r2_presign";
 import { handleStatusSteps } from "./status_steps";
+import { handleLogDownload } from "./log_proxy";
 import { loadConfig, resolveEnv, type ResolvedEnv } from "./config";
 import { corsHeaders, error, json, timingSafeEqual, withCors } from "./http";
 
@@ -110,6 +111,13 @@ export default {
 
         case url.pathname === "/api/build" && request.method === "POST":
           return await handleBuild(request, cfg, ctx);
+
+        // 日志下载：代理 GitHub artifact（带令牌取回后转发给面板）
+        case url.pathname.startsWith("/api/log/") && request.method === "GET": {
+          const id = decodeURIComponent(url.pathname.slice("/api/log/".length));
+          if (!id) return error(400, "bad_request", "缺少 jobId");
+          return await handleLogDownload(cfg, id);
+        }
 
         // 步骤明细必须排在 /api/status/ 前缀匹配之前，
         // 否则会被当成 jobId="xxx/steps" 处理。

@@ -11,6 +11,7 @@ import {
   describeGitHubError,
   fetchArtifactUrl,
   fetchDownloadUrlFromAnnotations,
+  fetchLogArtifactUrl,
   getRun,
   GitHubError,
 } from "./github";
@@ -41,10 +42,13 @@ export async function handleStatus(env: Env, jobId: string): Promise<Response> {
       const downloadUrl = run.conclusion === "success"
         ? await fetchDownloadUrlFromAnnotations(env, run.run_id) ?? await fetchArtifactUrl(env, run.run_id)
         : null;
+      // 日志与成败无关：失败时更要看日志，所以无条件抓。
+      const logUrl = await fetchLogArtifactUrl(env, run.run_id);
       const patch: Partial<BuildJob> = {
         status: "completed" as JobStatus,
         conclusion: run.conclusion,
         download_url: downloadUrl,
+        log_url: logUrl,
         error: run.conclusion === "success" ? null : `流水线以 ${run.conclusion ?? "unknown"} 结束`,
       };
       const updated = await patchJob(env, jobId, patch);
