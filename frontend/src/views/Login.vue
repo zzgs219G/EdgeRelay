@@ -48,15 +48,31 @@
 
       <!-- 后端配置问题直接摊在登录页：缺 secret 来这里就能看到，
            而不是登进去才发现所有接口都坏。 -->
+      <!--
+        problems = 致命（KV 挂了，面板不可用）→ 红色
+        warnings = 非致命（缺 token 只影响构建 / APP）→ 琥珀色
+        分级展示，避免"只是还没配 APP 令牌"被渲染成整站故障。
+      -->
       <div
         v-if="auth.health && !auth.health.ok"
+        class="mt-4 bg-red-50 border border-red-100 rounded-2xl p-4"
+      >
+        <div class="flex items-center text-red-600 text-xs font-bold mb-2">
+          <i class="ri-error-warning-fill mr-1.5" /> 后端不可用
+        </div>
+        <ul class="text-[11px] text-red-700/80 space-y-1 leading-relaxed">
+          <li v-for="p in auth.health.problems || []" :key="p">{{ p }}</li>
+        </ul>
+      </div>
+      <div
+        v-else-if="auth.health && auth.health.warnings?.length"
         class="mt-4 bg-amber-50 border border-amber-100 rounded-2xl p-4"
       >
         <div class="flex items-center text-amber-600 text-xs font-bold mb-2">
-          <i class="ri-alert-fill mr-1.5" /> 后端未就绪
+          <i class="ri-information-fill mr-1.5" /> 部分功能未就绪
         </div>
         <ul class="text-[11px] text-amber-700/80 space-y-1 leading-relaxed">
-          <li v-for="p in auth.health.problems" :key="p">{{ p }}</li>
+          <li v-for="w in auth.health.warnings" :key="w">{{ w }}</li>
         </ul>
       </div>
 

@@ -352,16 +352,45 @@ describe("EdgeRelay — /health", () => {
     expect([...store.keys()].some((k) => k.startsWith("health:probe"))).toBe(true);
   });
 
-  it("reports missing secrets even when KV works", async () => {
+  it("is 200-degraded when KV works but a build secret is missing", async () => {
+    // 判断标准是「面板与接口能不能用」，不是「所有 secret 都配了」。
+    // KV 正常 → 面板可用 → 200；缺 GITHUB_TOKEN 只让构建不可用，
+    // 通过 warnings 告知，不该渲染成整站故障。
     const store = new Map<string, string>();
     const resp = await worker.fetch(
       new Request("https://edge-relay.test/health"),
       env({ EDGE_RELAY_KV: fakeKv(store), GITHUB_TOKEN: "" }),
       {} as ExecutionContext,
     );
-    expect(resp.status).toBe(503);
-    const body = (await resp.json()) as { missing: string[] };
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as {
+      ok: boolean;
+      missing: string[];
+      warnings: string[];
+    };
+    expect(body.ok).toBe(true);
     expect(body.missing).toContain("GITHUB_TOKEN");
+    expect(body.warnings.join(" ")).toContain("构建接口不可用");
+  });
+
+  it("is 200-degraded when only RELAY_TOKEN is missing", async () => {
+    // 真实体验问题：RELAY_TOKEN 只影响 APP，面板用 session cookie。
+    // 之前把它列为必填，导致前台永远显示"后端未就绪"。
+    const store = new Map<string, string>();
+    const resp = await worker.fetch(
+      new Request("https://edge-relay.test/health"),
+      env({ EDGE_RELAY_KV: fakeKv(store), RELAY_TOKEN: "" }),
+      {} as ExecutionContext,
+    );
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as {
+      ok: boolean;
+      missing: string[];
+      warnings: string[];
+    };
+    expect(body.ok).toBe(true);
+    expect(body.missing).not.toContain("RELAY_TOKEN");
+    expect(body.warnings.join(" ")).toContain("RELAY_TOKEN");
   });
 });
 

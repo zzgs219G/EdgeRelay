@@ -33,9 +33,17 @@
       <template v-else>
         <div
           v-if="errorMsg"
-          class="bg-red-50 border border-red-100 rounded-2xl p-4 text-[12px] text-red-600 leading-relaxed"
+          class="bg-red-50 border border-red-100 rounded-2xl p-4"
         >
-          {{ errorMsg }}
+          <div class="text-[12px] text-red-600 leading-relaxed">{{ errorMsg }}</div>
+          <button
+            v-if="!baseline"
+            class="mt-3 text-[12px] font-bold text-red-700 bg-white border border-red-200
+                   px-3 py-2 rounded-lg active:scale-95 transition"
+            @click="load"
+          >
+            重试
+          </button>
         </div>
 
         <!-- ── 敏感字段（需当前密码）───────────────────────── -->
@@ -104,12 +112,22 @@
             </div>
             <div>
               <label class="block text-xs font-bold text-slate-500 mb-2">
-                R2 公开域名 <span class="text-gray-400 font-normal">（可选）</span>
+                R2 公开域名 <span class="text-gray-400 font-normal">（可选，现阶段可不填）</span>
               </label>
               <el-input v-model="form.r2_public_domain" placeholder="https://r2.example.com" />
-              <p class="text-[10px] text-gray-400 mt-1.5">
-                用于把 GitHub 注解里被打码的产物链接补全
-              </p>
+              <div class="text-[10px] text-gray-400 mt-1.5 leading-relaxed space-y-1">
+                <p>
+                  用途只有一个：流水线用
+                  <code class="font-mono bg-slate-100 px-1 rounded">::notice</code>
+                  喊出产物链接时，GitHub 会把域名打码成 <code class="font-mono">***</code>，
+                  网关用这个值把链接补全。
+                </p>
+                <p>
+                  <strong class="text-slate-500">不是</strong> APP 上传 APK 用的地址——
+                  上传走 APP 自己的 R2 配置。网关目前也不提供 R2 上传接口。
+                </p>
+                <p>留空时：产物链接只能退回 GitHub artifact（下载需要 GitHub 令牌）。</p>
+              </div>
             </div>
           </div>
         </section>
@@ -212,7 +230,21 @@ const secretFields = computed(() => [
 ])
 
 const dirty = computed(() => {
-  if (!baseline) return false
+  // baseline 为 null 说明 GET /api/config 没成功（比如没权限）。
+  // 此时若还要求 baseline 存在，保存按钮会永久禁用且没有任何提示——
+  // 用户只会看到"点不了"。改为：有输入就算 dirty，把失败暴露在保存时。
+  if (!baseline) {
+    return Boolean(
+      form.github_owner ||
+        form.github_repo ||
+        form.github_ref ||
+        form.r2_public_domain ||
+        form.github_token ||
+        form.relay_token ||
+        form.relay_password ||
+        currentPassword.value
+    )
+  }
   if (currentPassword.value) return true
   return (
     form.github_owner !== baseline.github_owner ||

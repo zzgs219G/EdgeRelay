@@ -265,16 +265,27 @@ function checkRateLimit(request: Request, env: Env): Response | null {
  * 分别用 200（健康）与 503（不健康）表达，让 CF 探活与人工排障都能
  * 一眼看出问题，而不是拿到一个恒为 true 的 ok 字段。
  */
+/**
+ * 健康检查。
+ *
+ * 判断标准 = 「管理面板与构建接口能不能正常用」，而不是「所有 secret 都配了」。
+ *
+ * 曾经把 RELAY_TOKEN 列为必填，导致一个自相矛盾的体验：文档说"接 APP
+ * 时才需要 RELAY_TOKEN"，但前台一直显示"后端未就绪"——因为健康检查
+ * 把它当硬性条件。RELAY_TOKEN 只影响 APP 的 Bearer 鉴权，面板用
+ * session cookie，不受影响。
+ *
+ * 现在的分级：
+ *   fatal  （503）：KV 不可用 —— 面板和所有接口都会挂
+ *   degraded（200）：缺 GITHUB_TOKEN 等 —— 面板能进，但构建会失败，
+ *                    用 warnings 告诉操作者哪部分不可用
+ */
 async function healthCheck(env: Env): Promise<Response> {
   const problems: string[] = [];
   const missing: string[] = [];
+  const warnings: string[] = [];
 
-  if (!env.GITHUB_TOKEN) missing.push("GITHUB_TOKEN");
-  if (!env.RELAY_TOKEN) missing.push("RELAY_TOKEN");
-  if (!env.GITHUB_OWNER) missing.push("GITHUB_OWNER");
-  if (!env.GITHUB_REPO) missing.push("GITHUB_REPO");
-
-  // KV 真实探测：写一个探针键再读回。
+  // ── 致命：KV 不可用则整个网关无法工作 ──
   let kvOk = false;
   try {
     if (!env.EDGE_RELAY_KV) {
@@ -292,20 +303,34 @@ async function healthCheck(env: Env): Promise<Response> {
     );
   }
 
-  if (missing.length > 0) problems.push(`未配置的 secret/vars: ${missing.join(", ")}`);
+  // ── 非致命：缺失只会让部分功能不可用，不该挡住面板 ──
+  if (!env.GITHUB_TOKEN) missing.push("GITHUB_TOKEN");
+  if (!env.GITHUB_OWNER) missing.push("GITHUB_OWNER");
+  if (!env.GITHUB_REPO) missing.push("GITHUB_REPO");
 
-  const healthy = kvOk && missing.length === 0;
+  if (missing.length > 0) {
+    warnings.push(`构建接口不可用（/api/workflows、/api/build 会失败）：缺 ${missing.join(", ")}`);
+  }
+  // RELAY_TOKEN 缺失只影响 APP，明确说出来而不是算作故障
+  if (!env.RELAY_TOKEN) {
+    warnings.push("RELAY_TOKEN 未配置：APP 无法调用 /api/*（面板不受影响）");
+  }
+
+  const healthy = kvOk;
   return json(
     {
       ok: healthy,
       service: "edge-relay",
       server_time: Date.now(),
       kv: kvOk ? "ok" : "error",
+      // missing 保留给"会导致构建失败"的项，语义与 warnings 一致
       missing,
       problems,
+      warnings,
     },
     healthy ? 200 : 503,
   );
 }
+
 
 // json / error / corsHeaders / withCors / timingSafeEqual 见 http.ts

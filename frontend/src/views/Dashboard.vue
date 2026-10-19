@@ -43,15 +43,28 @@
 
     <main class="flex-grow w-full max-w-2xl mx-auto px-4 py-4 pb-24">
       <!-- 后端告警 -->
+      <!-- 致命问题：红色 -->
       <div
-        v-if="!healthOk"
+        v-if="!healthOk && auth.health?.problems?.length"
+        class="mb-4 bg-red-50 border border-red-100 rounded-2xl p-4"
+      >
+        <div class="flex items-center text-red-600 text-xs font-bold mb-2">
+          <i class="ri-error-warning-fill mr-1.5" /> 后端不可用
+        </div>
+        <ul class="text-[11px] text-red-700/80 space-y-1 leading-relaxed">
+          <li v-for="p in auth.health.problems" :key="p">{{ p }}</li>
+        </ul>
+      </div>
+      <!-- 非致命：琥珀色。面板能用，只是某些功能缺配置 -->
+      <div
+        v-if="auth.health?.warnings?.length"
         class="mb-4 bg-amber-50 border border-amber-100 rounded-2xl p-4"
       >
         <div class="flex items-center text-amber-600 text-xs font-bold mb-2">
-          <i class="ri-alert-fill mr-1.5" /> 后端未就绪
+          <i class="ri-information-fill mr-1.5" /> 部分功能未就绪
         </div>
         <ul class="text-[11px] text-amber-700/80 space-y-1 leading-relaxed">
-          <li v-for="p in auth.health?.problems || []" :key="p">{{ p }}</li>
+          <li v-for="w in auth.health.warnings" :key="w">{{ w }}</li>
         </ul>
       </div>
 
