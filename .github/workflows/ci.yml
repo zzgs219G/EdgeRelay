@@ -1,0 +1,66 @@
+# EdgeRelay — push 自动质量门（类型检查 + 测试 + 前端构建）
+#
+# ⚠️ 本 workflow **不负责部署**。
+#
+# 部署由 Cloudflare Workers Builds 完成（CF 控制台连 Git，push 自动
+# `npm run deploy`）。曾经这里也有一个 deploy job，但它需要
+# CF_API_TOKEN / CLOUDFLARE_ACCOUNT_ID 两个从未配置的 secret，导致
+# 每次 push 都红并邮件通知——而部署其实早就在 CF 那边正常跑着了。
+#
+# 两套部署并存还有实际风险：两边 wrangler/依赖版本不同步时会互相覆盖。
+# 所以这里只保留 verify，作为「代码有没有坏」的快速反馈。
+#
+# 如果你想改用 GitHub Actions 部署，需要：
+#   1. 配 repo secrets：CF_API_TOKEN（权限 Workers Scripts: Edit）、
+#      CLOUDFLARE_ACCOUNT_ID
+#   2. 去 CF 控制台关掉 Workers Builds，避免双触发
+#   3. 把下面注释掉的 deploy job 加回来
+
+name: EdgeRelay CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: edge-relay-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Typecheck · Test · Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # npm ci 需要 lock 文件与 package.json 同步；不同步直接失败，
+      # 能挡住一个装不出依赖的提交。
+      - name: 安装 Worker 依赖
+        run: npm ci
+
+      - name: 安装前端依赖
+        run: npm --prefix frontend ci
+
+      - name: 类型检查
+        run: npx tsc --noEmit
+
+      # workers pool 版：ubuntu 上 workerd 二进制可用。
+      - name: 单元测试
+        run: npx vitest run
+
+      # 提前构建一次，确保 Vue 源码编译得过。
+      - name: 构建前端
+        run: npm --prefix frontend run build
+
+      # frontend/dist 提交在 git 里（CF Build command 可能没填，靠它兜底）。
+      # 校验它与源码同步：改了 Vue 却忘了重新 build，会让 CF 静默部署
+      # 旧前端，所以必须显式失败而不是放过去。
+      - name: 校验 dist 与源码同步
+        run: node scripts/check-dist.mjs
