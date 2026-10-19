@@ -12,14 +12,17 @@ main = "src/index.ts"
 compatibility_date = "2026-10-20"
 compatibility_flags = ["nodejs_compat"]
 
+# workers_dev 必须写在任何 [[routes]] 之前：TOML 的 [[routes]] 是数组表，
+# 写在它后面的顶层键会被归进 routes 元素，导致
+# "Expected routes to be an array of either strings or objects with the
+#  shape { pattern, custom_domain, zone_id | zone_name }" 而 deploy 失败。
+workers_dev = true
+
 # 自定义域名（Wrangler 会代配 DNS + 边缘 TLS）。
 # zone 必须位于当前 Cloudflare 账号下。
 [[routes]]
 pattern = "edge-relay.wu.engineer"
 custom_domain = true
-
-# 同时保留 *.workers.dev 入口，便于迁移期双跑。
-workers_dev = true
 
 # ── KV：任务表 ───────────────────────────────────────────────────────
 # key = job:<uuid>，value = BuildJob JSON，TTL 见 JOB_RETENTION_DAYS。

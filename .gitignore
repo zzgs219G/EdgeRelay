@@ -9,3 +9,6 @@ dist/
 
 # 本地需求草稿，不进 git
 .local-docs/
+
+# 构建日志等过程产物，不进 git
+.local-docs/
