@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import worker from "../src/router";
 import type { Env } from "../src/types";
-import { invalidateConfigCache } from "../src/config";
+import { invalidateConfigCache, maskSecret } from "../src/config";
 
 /**
  * 运行时配置：GET /api/config 与 PATCH /api/config。
@@ -382,5 +382,122 @@ describe("escape hatch: env password stays valid after KV override", () => {
       {} as ExecutionContext,
     );
     expect(withOld.status).toBe(200);
+  });
+});
+
+describe("POST /api/config/reveal — 按需查看明文", () => {
+  const REVEAL_AUTH = { authorization: "Bearer env-relay-token" };
+
+  function revealReq(body: unknown, headers: Record<string, string> = REVEAL_AUTH): Request {
+    return new Request("https://edge-relay.test/api/config/reveal", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("requires auth", async () => {
+    const resp = await worker.fetch(
+      revealReq({ field: "github_token", current_password: "env-password" }, {}),
+      freshEnv(),
+      {} as ExecutionContext,
+    );
+    expect(resp.status).toBe(401);
+  });
+
+  it("returns 403 without the current password", async () => {
+    // 关键安全边界：光有 session/令牌不足以读明文
+    const resp = await worker.fetch(
+      revealReq({ field: "github_token" }),
+      freshEnv(),
+      {} as ExecutionContext,
+    );
+    expect(resp.status).toBe(403);
+  });
+
+  it("returns 403 with a wrong password", async () => {
+    const resp = await worker.fetch(
+      revealReq({ field: "github_token", current_password: "nope" }),
+      freshEnv(),
+      {} as ExecutionContext,
+    );
+    expect(resp.status).toBe(403);
+  });
+
+  it("returns the plaintext for one field with the right password", async () => {
+    const resp = await worker.fetch(
+      revealReq({ field: "github_token", current_password: "env-password" }),
+      freshEnv(),
+      {} as ExecutionContext,
+    );
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as { ok: boolean; field: string; value: string };
+    expect(body.ok).toBe(true);
+    expect(body.field).toBe("github_token");
+    expect(body.value).toBe("env-github-token");
+  });
+
+  it("refuses non-secret fields — no batch dump via this endpoint", async () => {
+    const resp = await worker.fetch(
+      revealReq({ field: "github_owner", current_password: "env-password" }),
+      freshEnv(),
+      {} as ExecutionContext,
+    );
+    expect(resp.status).toBe(400);
+  });
+
+  it("404s a secret field that is not set", async () => {
+    const resp = await worker.fetch(
+      revealReq({ field: "r2_secret_access_key", current_password: "env-password" }),
+      freshEnv(),
+      {} as ExecutionContext,
+    );
+    expect(resp.status).toBe(404);
+  });
+
+  it("accepts the panel-set password too (dual channel)", async () => {
+    const e = freshEnv();
+    await worker.fetch(
+      req(
+        "/api/config",
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            values: { relay_password: "panel-new-password" },
+            current_password: "env-password",
+          }),
+        },
+        AUTH,
+      ),
+      e,
+      {} as ExecutionContext,
+    );
+    invalidateConfigCache();
+
+    const resp = await worker.fetch(
+      revealReq({ field: "relay_password", current_password: "panel-new-password" }),
+      e,
+      {} as ExecutionContext,
+    );
+    expect(resp.status).toBe(200);
+    expect((await resp.json() as { value: string }).value).toBe("panel-new-password");
+  });
+});
+
+describe("maskSecret — 固定 6 星，不泄漏长度", () => {
+  it("uses a fixed-width mask regardless of secret length", () => {
+    const short = maskSecret("abcdefghijkl");      // 12
+    const long = maskSecret("x".repeat(64));        // 64
+    expect(short).toBe("abcd******ijkl");
+    expect(long).toBe("xxxx******xxxx");
+    // 两者中间都是 6 个星，无法从掩码推断真实长度
+    expect(short!.length).toBe(long!.length);
+  });
+
+  it("handles very short secrets without revealing them", () => {
+    expect(maskSecret("abc")).toBe("******");
+    expect(maskSecret("")).toBeNull();
+    expect(maskSecret(undefined)).toBeNull();
   });
 });

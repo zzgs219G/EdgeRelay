@@ -92,4 +92,12 @@ export const api = {
   patchConfig(body) {
     return request('/api/config', { method: 'PATCH', body })
   },
+
+  /** 查看单个敏感字段明文。必须带当前密码，且一次只能一个字段。 */
+  revealConfig(field, currentPassword) {
+    return request('/api/config/reveal', {
+      method: 'POST',
+      body: { field, current_password: currentPassword },
+    })
+  },
 }

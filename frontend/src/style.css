@@ -70,6 +70,26 @@ select {
   box-shadow: 0 0 0 1px #ebeef5 inset !important;
   background-color: #fff;
 }
+
+/*
+ * placeholder 与输入文字必须明显区分。
+ *
+ * 踩过的坑：EP 默认 placeholder 是 #a8abb2，而输入文字用的
+ * --el-text-color-regular 也是 #a8abb2——两者完全一样，导致空输入框
+ * 看起来"已经有值了"。这里把输入文字压深、placeholder 调浅，拉开对比。
+ */
+.el-input__inner,
+.el-textarea__inner {
+  color: #1e293b;
+}
+.el-input__inner::placeholder,
+.el-textarea__inner::placeholder {
+  color: #cbd5e1;
+}
+/* 只读/禁用态仍要能看清 */
+.el-input.is-disabled .el-input__inner {
+  color: #94a3b8;
+}
 .el-input__wrapper.is-focus {
   box-shadow: 0 0 0 1px #3b82f6 inset !important;
 }

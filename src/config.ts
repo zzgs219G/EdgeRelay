@@ -186,13 +186,17 @@ export async function resolveEnv(env: Env): Promise<ResolvedEnv> {
   };
 }
 
-/** 遮蔽敏感值：保留首尾各若干字符，中间用 * 填充。 */
+/**
+ * 遮蔽敏感值：保留首尾各 4 字符，中间固定 6 个星。
+ *
+ * 固定长度而非按真实长度填充：原来 `*`.repeat(min(12, len-8)) 对长令牌
+ * （GitHub PAT 40 字符、R2 Secret 64 字符）会渲出一长串星号，视觉噪音大
+ * 且反而暴露了「这个值有多长」。中间固定 6 星既够区分，又不泄漏长度。
+ */
 export function maskSecret(v: string | undefined): string | null {
   if (!v) return null;
-  if (v.length <= 8) return "*".repeat(v.length);
-  const head = v.slice(0, 4);
-  const tail = v.slice(-4);
-  return `${head}${"*".repeat(Math.min(12, v.length - 8))}${tail}`;
+  if (v.length <= 10) return "*".repeat(6);
+  return `${v.slice(0, 4)}${"*".repeat(6)}${v.slice(-4)}`;
 }
 
 /**

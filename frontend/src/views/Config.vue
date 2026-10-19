@@ -144,15 +144,54 @@
             type="number"
             :placeholder="f.placeholder"
           />
-          <el-input
-            v-else-if="f.secret"
-            v-model="form[f.key]"
-            type="password"
-            show-password
-            :placeholder="secretMeta[f.key]?.masked
-              ? `当前 ${secretMeta[f.key].masked}（留空不改）`
-              : f.placeholder"
-          />
+          <!-- 敏感字段：有值且未编辑时展示掩码 + 眼睛按钮（可查看原文复制）；
+               一旦开始输入就切到普通输入框，走「改新值」的语义。 -->
+          <template v-else-if="f.secret">
+            <div v-if="secretMeta[f.key]?.set && !editingSecret[f.key]" class="secret-row">
+              <span class="secret-mask font-mono">
+                {{ revealed[f.key] || secretMeta[f.key].masked }}
+              </span>
+              <button
+                class="secret-btn"
+                :title="revealed[f.key] ? '隐藏' : '查看并可复制（需密码）'"
+                :disabled="revealing === f.key"
+                @click="onToggleReveal(f.key)"
+              >
+                <i
+                  :class="revealed[f.key] ? 'ri-eye-off-line' : 'ri-eye-line'"
+                  :style="{ opacity: revealing === f.key ? 0.4 : 1 }"
+                />
+              </button>
+              <button
+                class="secret-btn"
+                :title="revealed[f.key] ? '复制' : '先点眼睛查看再复制'"
+                :disabled="!revealed[f.key]"
+                @click="onCopy(f.key)"
+              >
+                <i class="ri-file-copy-line" />
+              </button>
+              <button class="secret-btn" title="改为新值" @click="startEditSecret(f.key)">
+                <i class="ri-pencil-line" />
+              </button>
+            </div>
+
+            <template v-else>
+              <el-input
+                v-model="form[f.key]"
+                type="password"
+                show-password
+                :placeholder="secretMeta[f.key]?.set ? '输入新值以覆盖' : f.placeholder"
+              />
+              <button
+                v-if="secretMeta[f.key]?.set && editingSecret[f.key]"
+                class="text-[11px] text-slate-400 mt-1.5 active:text-slate-600"
+                @click="cancelEditSecret(f.key)"
+              >
+                取消修改
+              </button>
+            </template>
+          </template>
+
           <el-input v-else v-model="form[f.key]" :placeholder="f.placeholder" />
 
           <p v-if="f.hint" class="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
@@ -160,19 +199,21 @@
           </p>
         </div>
 
-        <!-- 有改动且有敏感字段时才要求密码 -->
-        <div v-if="editorNeedsPassword" class="pt-3 border-t border-slate-100">
+        <!-- 当前密码：只要本卡片含敏感字段就需要（查看原文、改值都要它）。
+             一直显示而不是按 dirty 隐藏，否则用户点"眼睛"时找不到输入框。 -->
+        <div v-if="activeCardHasSecret" class="pt-3 border-t border-slate-100">
           <label class="block text-xs font-bold text-slate-500 mb-1.5">
-            当前密码 <span class="text-red-500">*</span>
+            当前密码
+            <span v-if="editorNeedsPassword" class="text-red-500">*</span>
           </label>
           <el-input
             v-model="currentPassword"
             type="password"
             show-password
-            placeholder="修改凭证必须验证当前密码"
+            placeholder="查看或修改凭证都需要验证"
           />
           <p class="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
-            防止会话被他人拿到后直接改掉凭证。CF secret 中的旧密码始终有效，可作应急入口。
+            防止会话被他人拿到后读走或改掉凭证。CF secret 中的旧密码始终有效，可作应急入口。
           </p>
         </div>
       </div>
@@ -222,6 +263,11 @@ const savedHint = ref('')
 const editorOpen = ref(false)
 const activeCardKey = ref('')
 const currentPassword = ref('')
+/** 哪些敏感字段正处于「输入新值」模式 */
+const editingSecret = reactive({})
+/** 已揭示的明文字段（仅在内存，关闭弹窗即清空） */
+const revealed = reactive({})
+const revealing = ref('')
 
 /** 每个敏感字段的状态（是否设置过 + 遮蔽值），永不含明文。 */
 const secretMeta = reactive({
@@ -438,7 +484,14 @@ const editorDirty = computed(() => {
   })
 })
 
-/** 是否需要密码：只有改敏感字段才要。 */
+// 注意：revealed（查看原文）不算改动——它只是读取，不写回 KV。
+
+/** 本卡片是否包含敏感字段（决定要不要显示密码框）。 */
+const activeCardHasSecret = computed(
+  () => !!activeCard.value?.fields.some((f) => f.secret)
+)
+
+/** 是否已输入新值（决定密码框是否标必填）。 */
 const editorNeedsPassword = computed(() => {
   if (!activeCard.value || !baseline) return false
   return activeCard.value.fields.some(
@@ -502,12 +555,64 @@ function openEditor(key) {
   editorOpen.value = true
 }
 
+function startEditSecret(key) {
+  editingSecret[key] = true
+  form[key] = ''
+}
+
+function cancelEditSecret(key) {
+  editingSecret[key] = false
+  form[key] = ''
+  delete revealed[key]
+}
+
+/**
+ * 切换明文的显示状态。
+ *
+ * 显示需要当前密码——GET /api/config 只回掩码，明文单独按字段取。
+ * 这样「自己能看能复制」与「cookie 泄漏不等于凭证泄漏」两者兼得：
+ * 后者只能改、不能读走。
+ */
+async function onToggleReveal(key) {
+  if (revealed[key]) {
+    delete revealed[key]
+    return
+  }
+  if (!currentPassword.value) {
+    ElMessage.warning('请先在下方填写当前密码')
+    return
+  }
+  revealing.value = key
+  try {
+    const r = await api.revealConfig(key, currentPassword.value)
+    revealed[key] = r.value
+  } catch (e) {
+    ElMessage.error(e.message || '验证失败')
+  } finally {
+    revealing.value = ''
+  }
+}
+
+async function onCopy(key) {
+  const v = revealed[key]
+  if (!v) return
+  try {
+    await navigator.clipboard.writeText(v)
+    ElMessage.success('已复制')
+  } catch {
+    ElMessage.error('复制失败，请手动选择文本')
+  }
+}
+
 function onEditorClosed() {
   activeCardKey.value = ''
   currentPassword.value = ''
-  // 关闭时回滚未保存的敏感输入，避免下次打开看到上次的残留
+  // 关闭时回滚未保存的敏感输入，并**清空已揭示的明文**——
+  // 明文只该在本次编辑会话内存在，不能留在内存里等下次打开。
   for (const k of ['github_token', 'relay_token', 'relay_password', 'r2_access_key_id', 'r2_secret_access_key']) {
     form[k] = ''
+    delete revealed[k]
+    editingSecret[k] = false
   }
 }
 
@@ -696,6 +801,49 @@ onMounted(load)
   justify-content: space-between;
   padding: 9px 14px;
   border-top: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+/* 敏感字段的掩码展示行 */
+.secret-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px 0 11px;
+  min-height: 40px;
+  border-radius: 10px;
+  background: #f8fafc;
+  box-shadow: 0 0 0 1px #ebeef5 inset;
+}
+.secret-mask {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: #334155;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: all;
+}
+.secret-btn {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.secret-btn:active:not(:disabled) {
+  background: #e2e8f0;
+  color: #334155;
+}
+.secret-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 /* 弹窗宽度：手机上不要顶满 */
