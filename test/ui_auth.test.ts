@@ -59,21 +59,22 @@ function req(path: string, init: RequestInit = {}, headers: Record<string, strin
 
 describe("session cookie", () => {
   it("round-trips: build → verify", async () => {
-    const cookie = await buildSessionCookie("secret", 3600);
+    const cookie = await buildSessionCookie(env(), 3600);
     expect(cookie).toMatch(/^\d+\.[0-9a-f]+$/);
-    expect(await verifySessionCookie("secret", cookie)).toBe(true);
+    expect(await verifySessionCookie(env(), cookie)).toBe(true);
   });
 
-  it("rejects a cookie signed with a different secret", async () => {
-    const cookie = await buildSessionCookie("secret-a", 3600);
-    expect(await verifySessionCookie("secret-b", cookie)).toBe(false);
+  it("rejects a cookie signed with a different password", async () => {
+    // 用密码 A 签，用密码 B 验 → 必须拒。这是"改密码后旧 session 全失效"的保证。
+    const cookie = await buildSessionCookie(env({ RELAY_PASSWORD: "other-pw" }), 3600);
+    expect(await verifySessionCookie(env(), cookie)).toBe(false);
   });
 
   it("rejects a tampered expiry", async () => {
-    const cookie = await buildSessionCookie("secret", 3600);
+    const cookie = await buildSessionCookie(env(), 3600);
     const [exp] = cookie.split(".");
     const tampered = `${Number(exp) + 60_000}.${cookie.split(".")[1]}`;
-    expect(await verifySessionCookie("secret", tampered)).toBe(false);
+    expect(await verifySessionCookie(env(), tampered)).toBe(false);
   });
 
   it("rejects an expired cookie", async () => {
@@ -95,14 +96,14 @@ describe("session cookie", () => {
     const sig = Array.from(new Uint8Array(sigBuf))
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
-    expect(await verifySessionCookie(secret, `${exp}.${sig}`)).toBe(false);
+    expect(await verifySessionCookie(env(), `${exp}.${sig}`)).toBe(false);
   });
 
   it("rejects empty / malformed input", async () => {
-    expect(await verifySessionCookie("secret", "")).toBe(false);
-    expect(await verifySessionCookie("secret", "nodot")).toBe(false);
-    expect(await verifySessionCookie("secret", ".sig")).toBe(false);
-    expect(await verifySessionCookie("", "123.abc")).toBe(false);
+    expect(await verifySessionCookie(env(), "")).toBe(false);
+    expect(await verifySessionCookie(env(), "nodot")).toBe(false);
+    expect(await verifySessionCookie(env(), ".sig")).toBe(false);
+    expect(await verifySessionCookie(env({ RELAY_PASSWORD: "" }), "123.abc")).toBe(false);
   });
 
   it("reads a named cookie out of a Cookie header", () => {
@@ -138,7 +139,7 @@ describe("GET / — 打开网页", () => {
   });
 
   it("offers ASSETS to a logged-in browser", async () => {
-    const cookie = await buildSessionCookie("test-relay-token", 3600);
+    const cookie = await buildSessionCookie(env(), 3600);
     const fetched: string[] = [];
     const assets = {
       fetch: async (r: Request) => {
@@ -158,7 +159,7 @@ describe("GET / — 打开网页", () => {
   });
 
   it("falls back to the login page when ASSETS is unbound but session is valid", async () => {
-    const cookie = await buildSessionCookie("test-relay-token", 3600);
+    const cookie = await buildSessionCookie(env(), 3600);
     const resp = await worker.fetch(
       req("/", {}, { cookie: `${SESSION_COOKIE_NAME}=${cookie}` }),
       env(),
@@ -204,11 +205,10 @@ describe("POST /login", () => {
     expect(await resp.text()).toContain("密码不正确");
   });
 
-  it("explains itself when RELAY_TOKEN is unset (HMAC key would be empty)", async () => {
-    // 线上真实事故：RELAY_PASSWORD 配了但 RELAY_TOKEN 没配，
-    // crypto.subtle.importKey 抛
-    //   Imported HMAC key length (0) must be a non-zero value
-    // 一句指不到"缺 secret"上的 DataError。现在必须明确提示。
+  it("logs in fine with RELAY_TOKEN unset (panel must not depend on it)", async () => {
+    // 线上真实事故：RELAY_PASSWORD 配了但 RELAY_TOKEN 没配，登录 500。
+    // RELAY_TOKEN 是 APP 调 /api/* 的机器令牌，与面板登录无关——
+    // session cookie 的签名密钥从 RELAY_PASSWORD 派生，缺它面板照常能登。
     const resp = await worker.fetch(
       req("/login", {
         method: "POST",
@@ -217,10 +217,8 @@ describe("POST /login", () => {
       env({ RELAY_TOKEN: "" }),
       {} as ExecutionContext,
     );
-    expect(resp.status).toBe(500);
-    const body = await resp.text();
-    expect(body).toContain("RELAY_TOKEN");
-    expect(body).not.toContain("key length");
+    expect(resp.status).toBe(303);
+    expect(resp.headers.get("set-cookie")).toContain(SESSION_COOKIE_NAME);
   });
 
   it("explains itself when RELAY_PASSWORD is unset", async () => {
@@ -255,7 +253,7 @@ describe("POST /logout", () => {
 describe("/api/* accepts cookie or Bearer", () => {
   it("accepts a valid session cookie (browser path)", async () => {
     const store = new Map<string, string>();
-    const cookie = await buildSessionCookie("test-relay-token", 3600);
+    const cookie = await buildSessionCookie(env(), 3600);
     const resp = await worker.fetch(
       req("/api/jobs", {}, { cookie: `${SESSION_COOKIE_NAME}=${cookie}` }),
       env({ EDGE_RELAY_KV: fakeKv(store) }),
@@ -283,8 +281,9 @@ describe("/api/* accepts cookie or Bearer", () => {
     expect(resp.status).toBe(401);
   });
 
-  it("rejects a cookie signed with the wrong secret", async () => {
-    const cookie = await buildSessionCookie("some-other-token", 3600);
+  it("rejects a cookie signed with a different password", async () => {
+    // cookie 是用别的 RELAY_PASSWORD 签的，验不过
+    const cookie = await buildSessionCookie(env({ RELAY_PASSWORD: "other-pw" }), 3600);
     const resp = await worker.fetch(
       req("/api/jobs", {}, { cookie: `${SESSION_COOKIE_NAME}=${cookie}` }),
       env({ EDGE_RELAY_KV: fakeKv(new Map()) }),

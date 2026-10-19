@@ -327,21 +327,28 @@ npx wrangler kv namespace create EDGE_RELAY_KV
 
 # 2. 设 secrets（绝不进 git、绝不下发到 APP）
 #
-#    前三个是必填，漏一个就有功能坏掉：
-#      GITHUB_TOKEN      → /api/* 全废
-#      RELAY_TOKEN       → /api/* 401 + 登录时 500
-#      RELAY_PASSWORD    → /login 500
+#    想先用起来最少需要两个：
+#      RELAY_PASSWORD  → 管理面板登录。缺它 /login 报 500
+#      GITHUB_TOKEN    → /api/* 调 GitHub。缺它 /api/* 全废
 #
+#    RELAY_TOKEN 只与 APP 有关，面板不依赖它。等把 APP 接过来再配。
 #    生成随机值：openssl rand -hex 32
+npx wrangler secret put RELAY_PASSWORD    # 管理面板登录密码（现在就要）
 npx wrangler secret put GITHUB_TOKEN      # apk-protect-action 的 Actions:Read+Write 令牌
-npx wrangler secret put RELAY_TOKEN       # APP Bearer 令牌 + 面板 session 的 HMAC 签名密钥
-npx wrangler secret put RELAY_PASSWORD    # 管理面板登录密码
+npx wrangler secret put RELAY_TOKEN       # APP 调 /api/* 的 Bearer 令牌（接 APP 时才需要）
 npx wrangler secret put R2_PUBLIC_DOMAIN  # 可选，注解打码补全用
 ```
 
-`RELAY_TOKEN` 有两个用途，别以为是两个 secret：APP 调 `/api/*` 带的
-Bearer 值，以及管理面板 session cookie 的 HMAC 签名密钥。同一个值，
-旋转它等于同时踢掉所有 APP 和所有已登录的面板会话。
+**三个 secret 各管一段，互不牵连**：
+
+| Secret | 管什么 | 缺了会怎样 |
+|---|---|---|
+| `RELAY_PASSWORD` | 浏览器登录面板 | `/login` 500，面板用不了；APP 不受影响 |
+| `RELAY_TOKEN` | APP 调 `/api/*` 的 Bearer | `/api/*` 401，APP 用不了；**面板照常能登** |
+| `GITHUB_TOKEN` | 网关代调 GitHub | `/api/workflows`、`/api/build` 失败 |
+
+session cookie 的签名密钥从 `RELAY_PASSWORD` 派生，不依赖 `RELAY_TOKEN`。
+所以只配 `RELAY_PASSWORD` 就能把面板跑起来——这是最小可用状态。
 
 配完之后用 `curl https://<域名>/health` 自检——它会报告缺哪个
 （`missing` 数组），比翻 Dashboard 快。

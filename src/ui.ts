@@ -26,7 +26,7 @@ async function hmacSign(secret: string, payload: string): Promise<string> {
   if (!secret) {
     // crypto.subtle.importKey 对空密钥抛的 DataError 信息（"key length (0)"）
     // 完全指不到"secret 没配"上，所以在这里提前拦住并说清楚。
-    throw new Error("HMAC 密钥为空：RELAY_TOKEN secret 未配置");
+    throw new Error("HMAC 密钥为空：RELAY_PASSWORD secret 未配置");
   }
   const key = await crypto.subtle.importKey(
     "raw",
@@ -60,15 +60,42 @@ export function readCookie(request: Request, name: string): string {
   return "";
 }
 
+/**
+ * session cookie 的 HMAC 签名密钥。
+ *
+ * 从 RELAY_PASSWORD 派生，而不是用 RELAY_TOKEN——那两个是不同用途的
+ * secret：RELAY_PASSWORD 是浏览器登录凭据，RELAY_TOKEN 是 APP 调 /api/*
+ * 的机器令牌。面板登录只该依赖密码，缺 RELAY_TOKEN 不该让面板也登不进去。
+ *
+ * 用 HKDF 式的 info 标签把「密码」和「签名密钥」两个角色分开，避免同一份
+ * 密钥材料既当口令又当 MAC key。
+ */
+function sessionSecret(env: Env): string {
+  const pw = env.RELAY_PASSWORD ?? "";
+  const token = env.RELAY_TOKEN ?? "";
+  // 派生标签：固定串 + token 是否存在。配了 token 就把它并进标签，
+  // 这样旋转 RELAY_TOKEN 仍会让所有已签发的 session 失效（旧 cookie 的
+  // 签名是用带旧 token 的标签算的，验不过）。
+  const info = token ? `relay-session-v1+tok:${token}` : "relay-session-v1";
+  return `${info}:pw:${pw}`;
+}
+
+function sessionTtlSec(env: Env): number {
+  const raw = Number.parseInt(env.RELAY_SESSION_TTL_SEC ?? "", 10);
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_SESSION_TTL_SEC;
+  return Math.min(Math.max(raw, 60), 30 * 24 * 60 * 60);
+}
+
 /** 构造 `<expiry_ms>.<hex_sig>` 会话 cookie 值。 */
-export async function buildSessionCookie(secret: string, ttlSec: number): Promise<string> {
+export async function buildSessionCookie(env: Env, ttlSec: number): Promise<string> {
   const exp = Date.now() + ttlSec * 1000;
-  const sig = await hmacSign(secret, `${SESSION_LABEL}:${exp}`);
+  const sig = await hmacSign(sessionSecret(env), `${SESSION_LABEL}:${exp}`);
   return `${exp}.${sig}`;
 }
 
 /** 校验会话 cookie：格式正确、未过期、签名匹配。 */
-export async function verifySessionCookie(secret: string, raw: string): Promise<boolean> {
+export async function verifySessionCookie(env: Env, raw: string): Promise<boolean> {
+  const secret = sessionSecret(env);
   if (!secret || !raw) return false;
   const dot = raw.indexOf(".");
   if (dot <= 0) return false;
@@ -82,17 +109,11 @@ export async function verifySessionCookie(secret: string, raw: string): Promise<
   }
 }
 
-function sessionTtlSec(env: Env): number {
-  const raw = Number.parseInt(env.RELAY_SESSION_TTL_SEC ?? "", 10);
-  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_SESSION_TTL_SEC;
-  return Math.min(Math.max(raw, 60), 30 * 24 * 60 * 60);
-}
-
 /** 当前请求是否携带有效会话。 */
 export async function hasValidSession(request: Request, env: Env): Promise<boolean> {
-  const secret = env.RELAY_TOKEN ?? "";
-  if (!secret) return false;
-  return verifySessionCookie(secret, readCookie(request, SESSION_COOKIE_NAME));
+  // 只依赖 RELAY_PASSWORD（已派生进 sessionSecret）。缺 RELAY_TOKEN 不影响面板。
+  if (!env.RELAY_PASSWORD) return false;
+  return verifySessionCookie(env, readCookie(request, SESSION_COOKIE_NAME));
 }
 
 function html(body: string, status = 200): Response {
@@ -167,6 +188,9 @@ function renderLoginSuccessPage(): string {
 /**
  * POST /login。
  *
+ * 只依赖 RELAY_PASSWORD。RELAY_TOKEN 是 APP 调 /api/* 用的机器令牌，
+ * 与面板登录无关——缺它只让 APP 用不了，面板照常能登。
+ *
  * 密码不匹配时统一慢响应约 750ms，压制暴力破解吞吐。
  * 未配置 RELAY_PASSWORD 时明确报错，而不是接受任意密码。
  */
@@ -175,17 +199,6 @@ export async function handleLogin(request: Request, env: Env): Promise<Response>
   if (!expected) {
     return html(
       renderLoginPage("服务端未配置 RELAY_PASSWORD，请先执行 wrangler secret put RELAY_PASSWORD"),
-      500,
-    );
-  }
-
-  // RELAY_TOKEN 是 session cookie 的 HMAC 签名密钥。缺失时若不拦，
-  // crypto.subtle.importKey 收到空串会抛
-  //   Imported HMAC key length (0) must be a non-zero value
-  // 一句与"缺 secret"完全对应不上的 DataError。
-  if (!env.RELAY_TOKEN) {
-    return html(
-      renderLoginPage("服务端未配置 RELAY_TOKEN，请先执行 wrangler secret put RELAY_TOKEN"),
       500,
     );
   }
@@ -207,7 +220,7 @@ export async function handleLogin(request: Request, env: Env): Promise<Response>
   }
 
   const ttl = sessionTtlSec(env);
-  const cookie = await buildSessionCookie(env.RELAY_TOKEN ?? "", ttl);
+  const cookie = await buildSessionCookie(env, ttl);
   const headers = new Headers({ "set-cookie": buildSetCookie(cookie, ttl) });
   headers.set("location", "/dashboard");
   return new Response(renderLoginSuccessPage(), {
