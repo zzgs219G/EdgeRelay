@@ -309,6 +309,14 @@ async function load() {
 }
 
 async function onSave() {
+  // baseline 为 null 说明配置没读成功过。此时字段内容不可信（可能是
+  // 用户手填的），无法做「只提交改动项」的 diff——直接要求先加载成功，
+  // 否则会退化成"把所有字段都当成覆盖写进去"，覆盖掉 CF 侧的值。
+  if (!baseline) {
+    errorMsg.value = '配置尚未加载成功，请先点「重试」'
+    return
+  }
+
   saving.value = true
   errorMsg.value = ''
   try {
@@ -319,14 +327,19 @@ async function onSave() {
     if (form.github_repo !== baseline.github_repo) values.github_repo = form.github_repo
     if (form.github_ref !== baseline.github_ref) values.github_ref = form.github_ref
     if (form.r2_public_domain !== baseline.r2_public_domain) values.r2_public_domain = form.r2_public_domain
-    if (Number(form.rate_limit_per_min) !== Number(baseline.rate_limit_per_min)) {
-      values.rate_limit_per_min = Number(form.rate_limit_per_min)
+    // 数值字段：清空输入框时 v-model.number 给的是空串，而 Number("") === 0。
+    // 直接把 0 提交上去会踩到语义陷阱——rate_limit_per_min 的 0 表示
+    // 「关闭限流」，用户想"恢复默认"却把手刹拔了。
+    // 所以：空值 = 不提交该字段（保持现值）；想清除 KV 覆盖需显式填回默认值。
+    const numOrNull = (v) => {
+      if (v === '' || v === null || v === undefined) return null
+      const n = Number(v)
+      return Number.isFinite(n) ? n : null
     }
-    if (Number(form.job_retention_days) !== Number(baseline.job_retention_days)) {
-      values.job_retention_days = Number(form.job_retention_days)
-    }
-    if (Number(form.run_id_wait_ms) !== Number(baseline.run_id_wait_ms)) {
-      values.run_id_wait_ms = Number(form.run_id_wait_ms)
+    for (const key of ['rate_limit_per_min', 'job_retention_days', 'run_id_wait_ms']) {
+      const nextVal = numOrNull(form[key])
+      if (nextVal === null) continue
+      if (nextVal !== Number(baseline[key])) values[key] = nextVal
     }
     // 敏感字段：留空表示不改
     if (form.github_token) values.github_token = form.github_token

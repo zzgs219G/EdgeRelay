@@ -29,13 +29,22 @@ function headers(env: Env): Record<string, string> {
   };
 }
 
+/** 单次 GitHub 调用的超时。 */
+const GH_TIMEOUT_MS = 10_000;
+
 async function ghFetch(
   env: Env,
   path: string,
   init: RequestInit = {},
 ): Promise<Response> {
+  // 必须带超时：Worker 有墙钟上限，fetch 挂住会一直等到平台强杀，
+  // 用户拿到的是无信息的 1101（Worker threw exception），而不是
+  // 一句能排障的错误。10s 远大于 GitHub 正常响应时间（通常 <300ms）。
+  const timeout = AbortSignal.timeout(GH_TIMEOUT_MS);
   const resp = await fetch(`${API}${path}`, {
     ...init,
+    // 调用方若自己传了 signal，用它的；否则用默认超时。
+    signal: init.signal ?? timeout,
     headers: { ...headers(env), ...(init.headers ?? {}) },
   });
   if (!resp.ok) {
@@ -285,13 +294,22 @@ export interface RunSnapshot {
   status: string;
   conclusion: string | null;
   name: string;
+  /** run 的创建时刻。绑定 run_id 时必须用它，不能用 updated_at。 */
+  created_at: string;
   run_started_at: string | null;
   updated_at: string;
 }
 
 /**
- * 列出某个 workflow 最近的 run。
- * @param sinceMs 只返回 created_at 晚于该时刻的 run（毫秒时间戳）。
+ * 列出某个 workflow 最近的 run，只保留「在本任务创建之后才创建的」。
+ *
+ * @param sinceMs 任务创建时刻（毫秒）。只返回 created_at 晚于它（留 90s
+ *   时钟容差）的 run。
+ *
+ * 为什么必须用 created_at 而不是 updated_at（这里踩过坑）：
+ *   updated_at 对正在运行的 run 会持续刷新。一个 20 分钟前创建、仍在
+ *   跑的老 run，其 updated_at 是「几秒前」，于是被误判成「刚触发的
+ *   run」而绑到新任务上——新任务从此一直显示那个老 run 的状态。
  */
 export async function listRecentRuns(
   env: Env,
@@ -312,10 +330,23 @@ export async function listRecentRuns(
       status: r.status,
       conclusion: r.conclusion,
       name: r.name,
+      created_at: r.created_at,
       run_started_at: r.run_started_at,
       updated_at: r.updated_at,
     }))
-    .filter((r) => Date.parse(r.updated_at || "0") >= sinceMs - 90_000)
+    .filter((r) => {
+      // created_at 缺失 / 不可解析时保守放行（宁可多一个候选，也别把
+      // 真正的新 run 滤掉）。
+      //
+      // 注意不能写成 `Date.parse(r.created_at || "0")`——Date.parse("0")
+      // 返回的是 2000-01-01（946656000000），不是 NaN，于是"缺字段"会
+      // 被误判成"2000 年创建"，把所有 run 都滤掉。
+      if (!r.created_at) return true;
+      const created = Date.parse(r.created_at);
+      if (!Number.isFinite(created)) return true;
+      return created >= sinceMs - 90_000;
+    })
+    // 新的在前：run_id 单调递增，与 created_at 同序
     .sort((a, b) => b.run_id - a.run_id);
 }
 
@@ -334,6 +365,7 @@ export async function getRun(
     status: r.status,
     conclusion: r.conclusion,
     name: r.name,
+    created_at: r.created_at,
     run_started_at: r.run_started_at,
     updated_at: r.updated_at,
   };

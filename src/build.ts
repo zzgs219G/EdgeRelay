@@ -43,8 +43,11 @@ export async function handleBuild(
     return error(400, "bad_request", problems.join("；"));
   }
 
-  const jobId = newJobId();
+  // 同一个 now 同时用于 job_id 的时间前缀与 created_at_ms。
+  // 若分两次 Date.now()，极端情况下会差 1ms，导致 KV 字典序与
+  // created_at_ms 排序不完全一致（列表顺序细微错乱）。
   const now = Date.now();
+  const jobId = newJobId(now);
   const job: BuildJob = {
     job_id: jobId,
     run_id: null,

@@ -301,8 +301,19 @@ function fmtTime(ms) {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
+/** 登录过期统一处理：清状态 + 回登录页。 */
+function onAuthLost() {
+  auth.logged = false
+  router.replace({ name: 'login' })
+}
+
 async function refreshAll() {
-  await Promise.all([auth.probe(), job.loadJobs()])
+  await Promise.all([
+    auth.probe(),
+    job.loadJobs({ onAuthLost }),
+    // 流水线下拉的数据源。之前从没调用过，导致下拉框一直是空的。
+    job.loadWorkflows(),
+  ])
 }
 
 async function onBuild() {
@@ -335,7 +346,7 @@ let timer = null
 function startPolling() {
   stopPolling()
   timer = setInterval(() => {
-    if (document.visibilityState === 'visible') job.loadJobs()
+    if (document.visibilityState === 'visible') job.loadJobs({ onAuthLost })
   }, 5000)
 }
 function stopPolling() {

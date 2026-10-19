@@ -11,10 +11,17 @@ import { handleBuild } from "./build";
 import { handleStatus } from "./status";
 import { handleWorkflows } from "./workflows";
 import { reconcileOpenJobs } from "./reconcile";
-import { handleLogin, handleLogout, handleSession, hasValidSession } from "./ui";
+import {
+  handleLogin,
+  handleLogout,
+  handleSession,
+  hasValidSession,
+  readCookie,
+  SESSION_COOKIE_NAME,
+} from "./ui";
 import { handleListJobs } from "./jobs";
 import { handleGetConfig, handlePatchConfig } from "./config_api";
-import { resolveEnv, type ResolvedEnv } from "./config";
+import { loadConfig, resolveEnv, type ResolvedEnv } from "./config";
 import { corsHeaders, error, json, timingSafeEqual, withCors } from "./http";
 
 // 历史上其他模块从 router 引这两个，保留 re-export 以免改动扩散。
@@ -23,11 +30,6 @@ export { json, error, corsHeaders };
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-
-    // 把 KV 里的运行时配置合并进 env，供后续所有 handler 使用。
-    // 这样各处仍照旧读 env.GITHUB_TOKEN 等，无需改动；而操作者可以
-    // 在面板 UI 改配置（存 KV），不必每次回 Cloudflare 控制台。
-    const cfg: ResolvedEnv = await resolveEnv(env);
 
     // 预检：直接放行（具体请求仍要过鉴权）。
     if (request.method === "OPTIONS") {
@@ -39,9 +41,33 @@ export default {
     // 必须做真实探测，不能只回 ok:true —— 否则 KV 未绑 / namespace id
     // 填错时，/health 是全绿的，而每个真实请求才在 KV 上炸掉，排障时
     // 会被"健康检查明明正常"误导。
+    //
+    // 注意这里用原始 env 而非合并后的配置：healthCheck 自己已经要读写
+    // KV 探针，再叠加一次 resolveEnv 就是两次 KV 读，纯浪费。
     if (url.pathname === "/health" && request.method === "GET") {
-      return await healthCheck(cfg);
+      return await healthCheck(env);
     }
+
+
+    // 静态资源（SPA 的 js/css/字体、以及任意前端路由）不需要任何后端
+    // 配置——直接交给 assets，连 KV 都不碰。这是最常见的一类请求，
+    // 放在这里提前返回能省掉每请求一次 KV 读。
+    if (request.method === "GET" && !url.pathname.startsWith("/api/")) {
+      if (env.ASSETS) return env.ASSETS.fetch(request);
+      return json(
+        {
+          ok: false,
+          error: "静态资源未绑定：wrangler.toml 的 [assets] 或 frontend/dist 缺失",
+          path: url.pathname,
+        },
+        503,
+      );
+    }
+
+    // 到这里才需要运行时配置（/login、/api/*）。
+    // 把 KV 里的值合并进 env 供后续 handler 使用，各处仍照旧读
+    // env.GITHUB_TOKEN 等，无需改动。
+    const cfg: ResolvedEnv = await resolveEnv(env);
 
     // 登录 / 登出 / 会话探测：纯 JSON，不鉴权（它们就是鉴权的一部分）。
     //
@@ -56,28 +82,6 @@ export default {
     }
     if (url.pathname === "/api/session" && request.method === "GET") {
       return await handleSession(request, cfg);
-    }
-
-    // 其余非 /api/ 的 GET 一律交给 assets 里的 SPA。
-    //
-    // run_worker_first = true 让所有请求先过 Worker，而 assets 配了
-    // not_found_handling = "single-page-application"。Worker 若在这里
-    // 返回 JSON 404，SPA 兜底就永远没机会跑，/dashboard、/assets/*.js、
-    // 任何深链全会变成一串 JSON。
-    //
-    // 登录与否由 vue-router 判断：未登录渲染 Login.vue，已登录渲染
-    // Dashboard.vue。Worker 不再关心页面该显示什么。
-    if (request.method === "GET" && !url.pathname.startsWith("/api/")) {
-      if (env.ASSETS) return env.ASSETS.fetch(request);
-      // ASSETS 未绑定（本地 dev 或配错了）：给出可诊断的提示。
-      return json(
-        {
-          ok: false,
-          error: "静态资源未绑定：wrangler.toml 的 [assets] 或 frontend/dist 缺失",
-          path: url.pathname,
-        },
-        503,
-      );
     }
 
     // 鉴权 —— 只拦 /api/。
@@ -213,8 +217,19 @@ function checkRateLimit(request: Request, env: Env): Response | null {
   const cap = Number.parseInt(env.RATE_LIMIT_PER_MIN ?? "120", 10);
   if (!Number.isFinite(cap) || cap <= 0) return null;
 
+  // 限流 key 必须能区分调用方，否则所有人共用一个桶。
+  //
+  // 这里踩过坑：原实现取 authorization 头，`header.slice(7).trim()` 对
+  // 没有 "Bearer " 前缀的值会直接截断成垃圾串；而面板请求根本带 cookie
+  // 不带这个头，于是所有面板流量都落进同一个 "anonymous" 桶，两个浏览器
+  // 加起来 120 次/分钟就互相限流。
+  //
+  // 现在的 key 优先级：Bearer 令牌 > session cookie > 连接 IP。
   const header = request.headers.get("authorization") ?? "";
-  const token = header.slice(7).trim() || "anonymous";
+  const bearer = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+  const session = readCookie(request, SESSION_COOKIE_NAME);
+  const ip = request.headers.get("cf-connecting-ip") ?? "";
+  const token = bearer || session || ip || "anonymous";
   const now = Date.now();
 
   let bucket = buckets.get(token);
@@ -285,6 +300,15 @@ async function healthCheck(env: Env): Promise<Response> {
   const missing: string[] = [];
   const warnings: string[] = [];
 
+  // 判断"配没配"必须用合并后的配置：用户在面板里填了 GitHub Token 但
+  // 没在 CF 里设 secret，光看 env 会误报缺失。
+  // loadConfig 有 30s isolate 缓存，与下面的 KV 探针不冲突。
+  const kvCfg = await loadConfig(env);
+  const hasToken = Boolean(kvCfg.github_token || env.GITHUB_TOKEN);
+  const hasOwner = Boolean(kvCfg.github_owner || env.GITHUB_OWNER);
+  const hasRepo = Boolean(kvCfg.github_repo || env.GITHUB_REPO);
+  const hasRelayToken = Boolean(kvCfg.relay_token || env.RELAY_TOKEN);
+
   // ── 致命：KV 不可用则整个网关无法工作 ──
   let kvOk = false;
   try {
@@ -304,15 +328,15 @@ async function healthCheck(env: Env): Promise<Response> {
   }
 
   // ── 非致命：缺失只会让部分功能不可用，不该挡住面板 ──
-  if (!env.GITHUB_TOKEN) missing.push("GITHUB_TOKEN");
-  if (!env.GITHUB_OWNER) missing.push("GITHUB_OWNER");
-  if (!env.GITHUB_REPO) missing.push("GITHUB_REPO");
+  if (!hasToken) missing.push("GITHUB_TOKEN");
+  if (!hasOwner) missing.push("GITHUB_OWNER");
+  if (!hasRepo) missing.push("GITHUB_REPO");
 
   if (missing.length > 0) {
     warnings.push(`构建接口不可用（/api/workflows、/api/build 会失败）：缺 ${missing.join(", ")}`);
   }
   // RELAY_TOKEN 缺失只影响 APP，明确说出来而不是算作故障
-  if (!env.RELAY_TOKEN) {
+  if (!hasRelayToken) {
     warnings.push("RELAY_TOKEN 未配置：APP 无法调用 /api/*（面板不受影响）");
   }
 

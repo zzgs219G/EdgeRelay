@@ -13,6 +13,27 @@
 
 import type { BuildJob, Env, JobStatus } from "./types";
 
+/**
+ * job key：`job:<job_id>`，其中 job_id 自带逆序时间戳前缀。
+ *
+ * 为什么需要时间前缀：KV 的 list() 按 key 字典序返回前 N 个。若 job_id
+ * 是随机 UUID，字典序与创建时间无关——任务超过 limit 条后，取到的是
+ * 「字典序最小的 N 个」而不是「最新的 N 个」，新任务可能永远不显示。
+ *
+ * 为什么把时间嵌进 job_id 而不是另外存一份：若 key 里带时间而 job_id
+ * 不带，getJob(jobId) 就只能 list 扫描（1000 key + 逐条比对），而 APP
+ * 每 5 秒轮询一次、每次都要 getJob，延迟和开销都不可接受。让 job_id
+ * 自身含时间（base36 编码 8 字符），key 可由 job_id 直接推出，get() 一次命中。
+ *
+ * job_id 形如 `mvfn7uzx-a1b2c3d4`：前段是 1e15 - Date.now() 的 base36，
+ * 后段 8 位随机。对 APP 而言仍是不透明 ID，推不出仓库信息。
+ */
+function invTimePrefix(createdAtMs: number): string {
+  const inv = 1_000_000_000_000_000 - createdAtMs;
+  // 11 位 base36 足够覆盖 1e15（36^11 ≈ 1.3e17）
+  return inv.toString(36).padStart(11, "0");
+}
+
 function jobKey(jobId: string): string {
   return `job:${jobId}`;
 }
@@ -64,8 +85,15 @@ export async function listOpenJobs(env: Env, limit = 200): Promise<BuildJob[]> {
   return jobs;
 }
 
-export function newJobId(): string {
-  return crypto.randomUUID();
+/**
+ * 生成 job_id：`<逆序时间 base36 11位>-<8位随机>`。
+ *
+ * 时间前缀让 KV 的字典序 = 创建时间倒序，list() 天然先返回最新任务；
+ * 随机后缀保证唯一性（同一毫秒内并发也不会撞）；整体仍是不透明 ID。
+ */
+export function newJobId(createdAtMs: number = Date.now()): string {
+  const rand = crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+  return `${invTimePrefix(createdAtMs)}-${rand}`;
 }
 
 function retentionSeconds(env: Env): number {

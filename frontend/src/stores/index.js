@@ -73,14 +73,26 @@ export const useJobStore = defineStore('job', () => {
   const workflows = ref([])
   const submitting = ref(false)
 
-  async function loadJobs() {
+  /**
+   * 拉任务列表。
+   *
+   * onAuthLost：401 时的回调。登录过期后必须把用户送回登录页——
+   * 否则轮询每 5 秒失败一次、什么都不显示，用户只会看到一个静止页面，
+   * 却在后台持续打请求。
+   */
+  async function loadJobs({ onAuthLost } = {}) {
     loading.value = true
     try {
       const d = await api.jobs(100)
       jobs.value = d.jobs || []
+      return true
     } catch (e) {
-      // 401 由路由守卫处理，这里只提示非鉴权错误
-      if (e.status !== 401) ElMessage.error(e.message || '任务列表加载失败')
+      if (e.status === 401) {
+        onAuthLost?.()
+        return false
+      }
+      ElMessage.error(e.message || '任务列表加载失败')
+      return false
     } finally {
       loading.value = false
     }
