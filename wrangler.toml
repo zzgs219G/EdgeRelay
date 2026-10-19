@@ -7,6 +7,13 @@
 # 无 Durable Objects、无 Analytics Engine、无 migration —— 纯
 # fetch + KV + Cron。
 
+# Worker 名必须与 Cloudflare 控制台已存在的 Worker 完全一致。
+#
+# 注意：Workers Builds 检测到配置名与控制台不一致时，会用控制台的名字
+# 强制覆盖，并试图给仓库开一个"修复"PR。若日志出现
+#   Failed to match Worker name. Your config file is using the Worker
+#   name "X", but the CI system expected "Y"
+# 说明两边不一致，以控制台为准改这里（或去控制台改名）。
 name = "edge-relay"
 main = "src/index.ts"
 compatibility_date = "2026-10-20"
@@ -20,6 +27,11 @@ workers_dev = true
 
 # 自定义域名（Wrangler 会代配 DNS + 边缘 TLS）。
 # zone 必须位于当前 Cloudflare 账号下。
+#
+# 域名与上面的 name 无强制关系（域名只是路由到这个 Worker 的规则），
+# 但建议保持一致以免排查时混淆。若控制台里该 Worker 已绑了
+# edge-relay.wu.engineer，就保持这个值；若未绑定，wrangler 会在部署时
+# 自动创建 DNS 记录。
 [[routes]]
 pattern = "edge-relay.wu.engineer"
 custom_domain = true
