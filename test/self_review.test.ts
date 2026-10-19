@@ -1,6 +1,6 @@
 import { vi } from "vitest";
 import { describe, expect, it } from "vitest";
-import { listRecentRuns } from "../src/github";
+import { listRecentRuns, listWorkflows } from "../src/github";
 import { newJobId } from "../src/kv_store";
 import type { Env } from "../src/types";
 
@@ -153,5 +153,57 @@ describe("newJobId — 时间前缀让 KV 字典序等于时间序", () => {
   it("stays opaque — no repo or timing info leaked beyond ordering", () => {
     const id = newJobId(1_700_000_000_000);
     expect(id).toMatch(/^[0-9a-z]{11}-[0-9a-f]{8}$/);
+  });
+});
+
+describe("listWorkflows — 只返回构建流水线", () => {
+  function stubWorkflows(list: unknown[]): void {
+    vi.stubGlobal("fetch", async () => Response.json({ workflows: list }));
+  }
+
+  const wf = (path: string, state = "active") => ({
+    id: 1,
+    name: path,
+    path,
+    state,
+  });
+
+  it("keeps protect-* workflows", async () => {
+    stubWorkflows([
+      wf(".github/workflows/protect-modules.yml"),
+      wf(".github/workflows/protect-dex.yml"),
+    ]);
+    const result = await listWorkflows(env());
+    expect(result.map((w) => w.file_name)).toEqual([
+      "protect-modules.yml",
+      "protect-dex.yml",
+    ]);
+  });
+
+  it("excludes helper workflows such as notify-json-mirror.yml", async () => {
+    // 真实问题：notify-json-mirror.yml 是为 schema 镜像加的辅助 workflow，
+    // 它没有 apk_url 输入、不是加固流水线。不过滤的话 APP 新建任务页
+    // 会多出一个选了就报错的选项。
+    stubWorkflows([
+      wf(".github/workflows/protect-modules.yml"),
+      wf(".github/workflows/notify-json-mirror.yml"),
+    ]);
+    const result = await listWorkflows(env());
+    expect(result.map((w) => w.file_name)).toEqual(["protect-modules.yml"]);
+  });
+
+  it("still excludes inactive workflows", async () => {
+    stubWorkflows([
+      wf(".github/workflows/protect-modules.yml", "disabled_manually"),
+      wf(".github/workflows/protect-other.yml"),
+    ]);
+    const result = await listWorkflows(env());
+    expect(result.map((w) => w.file_name)).toEqual(["protect-other.yml"]);
+  });
+
+  it("returns empty when nothing matches the prefix", async () => {
+    stubWorkflows([wf(".github/workflows/build.yml")]);
+    const result = await listWorkflows(env());
+    expect(result).toEqual([]);
   });
 });

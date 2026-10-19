@@ -120,7 +120,9 @@
         <button class="w-full flex items-center justify-between mb-1" @click="formOpen = !formOpen">
           <div class="text-left">
             <h2 class="font-bold text-slate-800 text-[15px]">发起构建</h2>
-            <p class="text-[11px] text-gray-400 mt-0.5">提交 APK 到流水线加固</p>
+            <p class="text-[11px] text-gray-400 mt-0.5">
+              {{ formOpen ? '提交 APK 到流水线加固' : '点击展开新建构建' }}
+            </p>
           </div>
           <i
             class="ri-arrow-down-s-line text-gray-400 text-xl transition-transform"
@@ -237,7 +239,8 @@ const router = useRouter()
 const auth = useAuthStore()
 const job = useJobStore()
 
-const formOpen = ref(true)
+// 默认折叠：发起构建不是高频操作，日常主要看任务列表。
+const formOpen = ref(false)
 
 const form = reactive({
   apk_url: '',

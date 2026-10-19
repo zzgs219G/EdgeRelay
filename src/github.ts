@@ -84,6 +84,22 @@ interface GhWorkflow {
 }
 
 /** 列出仓库内 active 的 workflow（不含 inputs 元数据）。 */
+/**
+ * 构建流水线的文件名前缀白名单。
+ *
+ * 仓库里的 workflow 不全是「构建流水线」——还有辅助脚本，例如
+ * notify-json-mirror.yml（configs 变更时通知镜像仓库）。那些不该出现在
+ * APP 的新建任务页里，否则会多出一个选了就报错的选项。
+ *
+ * 用前缀而不是「解析每个 yml 看有没有 apk_url 输入」：后者语义更准，
+ * 但要为每个 workflow 多打一次 GitHub、多解析一次 YAML，而当前仓库里
+ * 构建流水线只有 protect-* 这一族。等真的出现多种命名再升级不迟。
+ *
+ * 改这里而不是改 APP：前缀是服务端约定，放网关可以随时调整，APP 也不必
+ * 知道仓库里到底有哪些文件。
+ */
+const BUILD_WORKFLOW_PREFIX = "protect-";
+
 export async function listWorkflows(env: Env): Promise<WorkflowMeta[]> {
   const resp = await ghFetch(
     env,
@@ -92,6 +108,7 @@ export async function listWorkflows(env: Env): Promise<WorkflowMeta[]> {
   const data = (await resp.json()) as { workflows?: GhWorkflow[] };
   return (data.workflows ?? [])
     .filter((w) => w.state === "active" && /\.(yml|yaml)$/.test(w.path))
+    .filter((w) => (w.path.split("/").pop() ?? "").startsWith(BUILD_WORKFLOW_PREFIX))
     .map((w) => ({
       id: w.id,
       name: w.name,
