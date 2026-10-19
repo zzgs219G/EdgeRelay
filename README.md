@@ -120,17 +120,36 @@ fall through 到静态资源；`not_found_handling = "single-page-application"`
 1. **`Authorization: Bearer <RELAY_TOKEN>`** —— APP / 脚本等机器调用方
 2. **`relay_session` cookie（HttpOnly）** —— 浏览器里的管理面板
 
-cookie 由 `POST /login` 种下，HMAC-SHA256 签名、密钥是 `RELAY_TOKEN`。
-好处是前端 JS 碰不到令牌（XSS 偷不走），且旋转 `RELAY_TOKEN` 立即
-注销所有会话。
+cookie 由 `POST /login` 种下，HMAC-SHA256 签名，**签名密钥从
+`RELAY_PASSWORD` 派生**（不是 `RELAY_TOKEN`）。
+
+早期版本用 `RELAY_TOKEN` 做签名密钥，导致「不配 `RELAY_TOKEN` 就连面板
+都登不进去」——这是把两个不同用途的 secret 耦在了一起。现在面板只依赖
+密码，`RELAY_TOKEN` 缺失只影响 APP。
+
+好处是前端 JS 碰不到 cookie（XSS 偷不走），改密码即注销所有会话。
 
 ## 接口
 
-所有接口（除 `GET /health` 与 `OPTIONS`）要求：
+除 `GET /health`、`OPTIONS`、`POST /login`、`GET /api/session` 外，
+其余都需要鉴权（Bearer 或面板 cookie，见上一节）。
 
-```
-Authorization: Bearer <RELAY_TOKEN>
-```
+| 方法 + 路径 | 用途 |
+|---|---|
+| `GET /health` | 健康检查（不鉴权，真实探测 KV） |
+| `POST /login` | 面板登录，种 session cookie |
+| `POST /logout` | 清除 cookie |
+| `GET /api/session` | 探测登录态 `{logged}` |
+| `GET /api/workflows` | 可用流水线列表（只返回 `protect-*` 构建流水线） |
+| `POST /api/build` | 触发构建，返回 `job_id` |
+| `GET /api/status/:jobId` | 任务状态（读 KV，不烧 GitHub 配额） |
+| `GET /api/status/:jobId/steps` | job/step 级明细（按需拉，详情页用） |
+| `POST /api/r2/presign` | R2 预签名上传 URL（密钥不出网关） |
+| `GET /api/jobs` | 面板任务列表（15s 服务端缓存） |
+| `GET /api/config` | 运行时配置（含敏感字段明文 + 掩码） |
+| `PATCH /api/config` | 部分更新配置，立即生效 |
+
+下面详述几个关键接口。
 
 ### `GET /api/workflows`
 
@@ -282,92 +301,28 @@ curl https://edge-relay.wu.engineer/health
 
 ## 部署
 
-**`wrangler deploy` 不会构建 Vue。** 它只检查 `frontend/dist` 存在，不存在就：
+**部署由 Cloudflare Workers Builds 负责**（CF 控制台连 Git，push 自动部署）。
+GitHub Actions 只做质量门，不部署。
 
-```
-✘ [ERROR] The directory specified by the "assets.directory" field in your
-  configuration file does not exist: /opt/buildhome/repo/frontend/dist
-```
-
-所以构建这一步必须由部署流程显式触发。下面两条路都能做到，**选一条**。
-
-### A. Cloudflare Workers Builds（当前在用）
-
-控制台 → Worker → Settings → Build，**只填一个字段，另一个必须留空**：
-
-| 字段 | 填什么 |
-|---|---|
-| **Build command** | **留空** |
-| **Deploy command** | `npm run deploy` |
-
-Build command 故意留空，所有事情交给 `npm run deploy` 一个命令做。它内部按
-顺序执行：`npm --prefix frontend ci`（装前端依赖）→ `vite build` →
-`wrangler deploy`。
-
-**为什么 Build command 必须留空**：CF Workers Builds 只装根目录的依赖，
-不会装 `frontend/` 的。如果 Build command 填 `npm --prefix frontend run build`，
-它会在没装前端依赖的情况下直接跑 vite，报
-`Cannot find package '@vitejs/plugin-vue'`。而 `npm run deploy` 里的
-`npm --prefix frontend ci` 先把这步补上了。
-
-四个常见错法（都真实踩过）：
-
-1. **Build command 填 `npm --prefix frontend run build`** → 前端依赖没装，
-   `Cannot find package '@vitejs/plugin-vue' imported from vite.config.js`
-2. **Build command 留空但 Deploy command 填 `npx wrangler deploy`** →
-   `frontend/dist` 不存在，报
-   `The directory specified by the "assets.directory" field ... does not exist`
-3. **Deploy command 填 `npx run deploy`** → `npm error could not determine
-   executable to run`。`run` 不是可执行文件，`npx` 后面只能跟包名，
-   不能跟 npm 自己的子命令
-4. **两个字段都填** → 前端构建跑两遍，浪费一分多钟
-
-Root directory 留空（仓库根就是根）。
-
-### B. GitHub Actions（`.github/workflows/deploy.yml`）
-
-push 到 main 自动跑：装依赖 → 类型检查 → 单元测试 → 构建前端 → 部署。
-需要 repo secrets：`CF_API_TOKEN`（权限 Workers Scripts: Edit）和
-`CLOUDFLARE_ACCOUNT_ID`。
-
-**两条路别同时开**，否则一次 push 触发两次部署。
-
-> 为什么没把 `frontend/dist` 提交进 git：那样 Build command 留空也能通，
-> 但改了 Vue 源码忘了 build 就会静默部署旧前端，没有任何报错。
-> 宁可让构建命令配错时明确失败。
-
-**A. Cloudflare Workers Builds（控制台配，push 自动 `npx wrangler deploy`）**
-在 CF 控制台 Workers → 你的 Worker → Settings → Build 里连 Git 仓库。
-Build command 填 `npm --prefix frontend run build`，Deploy command 填
-`npm run deploy`（见上面「三个常见错法」）。Node 版本 22。
-
-**B. GitHub Actions（`.github/workflows/deploy.yml`，配置可见可 review）**
-push 到 main 自动跑：类型检查 → 单元测试 → 部署。
-需要 repo secrets：`CF_API_TOKEN`（权限 Workers Scripts: Edit）和
-`CLOUDFLARE_ACCOUNT_ID`。
-
-两条路之前都要做一次：
+### 首次部署要做三件事
 
 ```bash
 # 1. 建 KV namespace，把输出的 id 填进 wrangler.toml 的 [[kv_namespaces]]
-#    （namespace id 不是 secret，可以直接提交；wrangler 不支持 ${VAR} 语法）
+#    （namespace id 不是 secret，可直接提交；wrangler 不支持 ${VAR} 语法）
 npx wrangler kv namespace create EDGE_RELAY_KV
 
-# 2. 设 secrets（绝不进 git、绝不下发到 APP）
-#
-#    想先用起来最少需要两个：
-#      RELAY_PASSWORD  → 管理面板登录。缺它 /login 报 500
-#      GITHUB_TOKEN    → /api/* 调 GitHub。缺它 /api/* 全废
-#
-#    RELAY_TOKEN 只与 APP 有关，面板不依赖它。等把 APP 接过来再配。
+# 2. 设 secrets。最小可用只需前两个：
+#      RELAY_PASSWORD → 面板登录。缺它 /login 报 500
+#      GITHUB_TOKEN   → 调 GitHub。缺它 /api/workflows、/api/build 失败
 #    生成随机值：openssl rand -hex 32
-npx wrangler secret put RELAY_PASSWORD    # 管理面板登录密码（现在就要）
+npx wrangler secret put RELAY_PASSWORD    # 面板登录密码
 npx wrangler secret put GITHUB_TOKEN      # apk-protect-action 的 Actions:Read+Write 令牌
-npx wrangler secret put RELAY_TOKEN       # APP 调 /api/* 的 Bearer 令牌（接 APP 时才需要）
-npx wrangler secret put R2_PUBLIC_DOMAIN  # 可选，注解打码补全用
+npx wrangler secret put RELAY_TOKEN       # APP 调 /api/* 的 Bearer（接 APP 时才需要）
+
+# 3. 其余配置（R2 四项、仓库坐标、限流）可以在面板填，见下一节
 ```
 
-**三个 secret 各管一段，互不牵连**：
+三个 secret 各管一段，互不牵连：
 
 | Secret | 管什么 | 缺了会怎样 |
 |---|---|---|
@@ -376,16 +331,67 @@ npx wrangler secret put R2_PUBLIC_DOMAIN  # 可选，注解打码补全用
 | `GITHUB_TOKEN` | 网关代调 GitHub | `/api/workflows`、`/api/build` 失败 |
 
 session cookie 的签名密钥从 `RELAY_PASSWORD` 派生，不依赖 `RELAY_TOKEN`。
-所以只配 `RELAY_PASSWORD` 就能把面板跑起来——这是最小可用状态。
+**只配 `RELAY_PASSWORD` 就能把面板跑起来**——这是最小可用状态。
 
-配完之后用 `curl https://<域名>/health` 自检——它会报告缺哪个
-（`missing` 数组），比翻 Dashboard 快。
+配完用 `curl https://<域名>/health` 自检，`missing` / `warnings` 会告诉你还缺什么。
 
-`wrangler.toml` 里 `GITHUB_OWNER` / `GITHUB_REPO` 放在 `[vars]` 而非 secret：
-仓库坐标本身不敏感，敏感的是令牌。
+### CF 控制台的 Build 配置
 
-**注意**：`package-lock.json` 必须提交。CI 用 `npm ci`，锁文件缺失或与
-`package.json` 不同步会直接失败——这是有意的，用来挡住装不出依赖的部署。
+Worker → Settings → Build：
+
+| 字段 | 值 |
+|---|---|
+| Build command | **留空** |
+| Deploy command | `npm run deploy` |
+
+`npm run deploy` 内部按顺序做：装前端依赖 → `vite build` → `wrangler deploy`。
+
+**为什么 Build command 必须留空**：CF 只装根目录依赖，不装 `frontend/` 的。
+若 Build command 填 `npm --prefix frontend run build`，它会在没装前端依赖
+的情况下跑 vite，报 `Cannot find package '@vitejs/plugin-vue'`。
+
+四个常见错法（都真实踩过）：
+
+1. **Build command 填了前端构建** → 前端依赖没装，`Cannot find package '@vitejs/plugin-vue'`
+2. **Build command 留空但 Deploy command 填 `npx wrangler deploy`** → 不构建前端，
+   报 `The directory specified by the "assets.directory" field ... does not exist`
+3. **Deploy command 填 `npx run deploy`** → `npm error could not determine executable to run`。
+   `run` 不是可执行文件，`npx` 后面只能跟包名
+4. **两个字段都填** → 前端构建跑两遍，浪费一分多钟
+
+Root directory 留空（仓库根就是根）。
+
+### GitHub Actions（`ci.yml`）
+
+push 到 main / PR 时跑：
+
+```
+npm ci → tsc --noEmit → vitest（99 个）→ 前端 build → dist 同步校验
+```
+
+**只做质量门，不部署**——不需要任何 secret，48 秒跑完。
+
+早期这里也有一个 deploy job，但它需要 `CF_API_TOKEN` /
+`CLOUDFLARE_ACCOUNT_ID` 两个从未配置的 secret，导致每次 push 都红并
+邮件通知，而部署其实早就在 CF 那边正常跑着。两套部署并存还有实际风险：
+两边 wrangler/依赖版本不同步时会互相覆盖。
+
+要改用 GitHub Actions 部署，需要：配那两个 secret → 去 CF 关掉
+Workers Builds → 把 `ci.yml` 里注释说明的 deploy job 加回来。
+
+### 为什么 `frontend/dist` 提交进 git
+
+因为 CF 的 Build command 可能被配错（见上面四个错法），提交 dist 让
+`wrangler deploy` 至少有目录可用，不至于直接失败。
+
+代价是「改了 Vue 忘了 build 会静默部署旧前端」，所以 `ci.yml` 里有一步
+`node scripts/check-dist.mjs` 校验 dist 与源码同步——不一致就显式失败。
+
+### 注意
+
+`package-lock.json` 和 `frontend/package-lock.json` 都必须提交。CI 用
+`npm ci`，锁文件缺失或不同步会直接失败——这是有意的，用来挡住装不出
+依赖的部署。
 
 ## 运行时配置（面板可改）
 
@@ -452,38 +458,64 @@ curl -X PATCH https://<域名>/api/config \
 | `job_retention_days` | 数字 | 任务保留天数，1-365 |
 | `run_id_wait_ms` | 数字 | 等 run_id 上限，≤60000 |
 
-## 配置项
+## 配置项速查
 
-| 变量 | 位置 | 默认 | 说明 |
+所有项都可在面板 `/config` 修改（存 KV，立即生效），KV 优先于 CF 侧：
+
+| 字段 | 默认 | 面板可改 | 说明 |
 |---|---|---|---|
-| `GITHUB_TOKEN` | secret | — | 必填。Actions: Read+Write |
-| `RELAY_TOKEN` | secret | — | 必填。APP 调用网关的 Bearer 令牌 |
-| `R2_PUBLIC_DOMAIN` | secret | — | 可选。注解里域名被 GitHub 打码为 `***` 时补全 |
-| `GITHUB_OWNER` | vars | `zzgs219G` | 仓库 owner |
-| `GITHUB_REPO` | vars | `apk-protect-action` | 仓库名 |
-| `GITHUB_REF` | vars | `main` | 触发分支 |
-| `RATE_LIMIT_PER_MIN` | vars | `120` | per-token 令牌桶（次/分钟），`0` 关闭 |
-| `JOB_RETENTION_DAYS` | vars | `7` | 任务记录 KV 保留天数 |
-| `RUN_ID_WAIT_MS` | vars | `4000` | dispatch 后等 run_id 的上限 |
+| `github_token` | — | ✅ | Actions: Read+Write |
+| `github_owner` / `github_repo` | `zzgs219G` / `apk-protect-action` | ✅ | 仓库坐标 |
+| `github_ref` | `main` | ✅ | 触发分支 |
+| `r2_endpoint` | — | ✅ | S3 端点，`https://<account>.r2.cloudflarestorage.com` |
+| `r2_bucket_name` | — | ✅ | 桶名 |
+| `r2_access_key_id` | — | ✅ | R2 密钥（敏感） |
+| `r2_secret_access_key` | — | ✅ | R2 密钥（敏感） |
+| `r2_public_domain` | — | ✅ | 拼产物链接 + 补全被打码域名 |
+| `relay_token` | — | ✅ | APP 的 Bearer 令牌（敏感） |
+| `relay_password` | — | ✅ | 面板登录密码（敏感） |
+| `rate_limit_per_min` | `120` | ✅ | 令牌桶，`0` 关闭 |
+| `job_retention_days` | `7` | ✅ | 任务 KV 保留天数，1-365 |
+| `run_id_wait_ms` | `4000` | ✅ | dispatch 后等 run_id 上限 |
+
+`wrangler.toml` 的 `[vars]` 里的值作为 env 兜底，面板清空某项即回退到它。
+
+详细操作见 [`docs/运维流程.md`](docs/运维流程.md)。
 
 ## 安全模型
 
-- **令牌不落地**：`GITHUB_TOKEN` 只存在于 Worker secret。响应体经测试断言
-  不含令牌、不含仓库坐标（见 `test/edge_relay.test.ts` 的
-  `never sends the GitHub token back to the client`）。
-- **APP 无 run_id 概念**：`job_id` 是网关自己生成的 UUID，与 GitHub 无
-  可推断关系，即使泄露也推不出仓库地址。
-- **限流**：per-token 令牌桶，默认 120 次/分钟。状态在 isolate 内，冷启动
-- 重置——定位是防突发滥用，不是严格 SLO。
-- **CORS 全开**：APP 是原生客户端，不用 cookie，无需收紧。
+**核心原则：所有凭证只在网关，APP 和公开 JSON 里都拿不到。**
+
+| 凭证 | 存在哪 | APP 能拿到吗 |
+|---|---|---|
+| `GITHUB_TOKEN` | Worker secret 或面板 KV | ❌ |
+| `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | Worker secret 或面板 KV | ❌ |
+| `RELAY_PASSWORD` | 仅 Worker secret / KV | ❌ |
+| `RELAY_TOKEN` | Worker secret 或面板 KV | ✅（APP 需要它调网关） |
+
+`RELAY_TOKEN` 是唯一下发到 APP 的凭证——它只能调网关接口，拿不到
+GitHub / R2。泄漏后轮换它即可止损。
+
+其它设计：
+
+- **APP 无 run_id 概念**：`job_id` 由网关生成，形如 `mvfn7uzx-a1b2c3d4`
+  （base36 时间前缀 + 随机），推不出仓库信息。
+- **R2 上传走预签名**：APP 向网关要一个 10 分钟有效、只能往 `apks/` 下
+  某个 key PUT 的 URL。URL 泄漏也只能覆盖那一个文件，读不到已有内容。
+- **限流**：per-token 令牌桶，默认 120 次/分钟。状态在 isolate 内，
+  冷启动重置——定位是防突发滥用，不是严格 SLO。
+- **CORS 全开**：APP 是原生客户端，不用 cookie 跨域，无需收紧。
+
+响应体经测试断言不含 GitHub 令牌、不含仓库坐标（见
+`test/edge_relay.test.ts` 的 `never sends the GitHub token back to the client`）。
 
 ## 本地开发
 
 ```bash
 # 后端（Termux 上可跑：tsc / vitest 不依赖 workerd）
 npm install --ignore-scripts        # --ignore-scripts 必须加，workerd 无 Android 构建
-npx tsc --noEmit                    # 类型检查
-npm test                            # 测试（node environment）
+npm run typecheck                   # tsc --noEmit
+npm test                            # 99 个测试（node environment）
 npm run build:frontend              # 构建 Vue 前端
 npx wrangler dev                    # 起本地 Worker（需要 PC，本机跑不了 workerd）
 ```
@@ -492,17 +524,26 @@ npx wrangler dev                    # 起本地 Worker（需要 PC，本机跑�
 > `vitest.node.config.ts`（node environment）给 Termux 用。
 > 被测代码只用 Web 标准 API，两个环境跑同一批断言。
 
-> `vitest.config.ts`（workers pool）给 CI / PC 用；
-> `vitest.node.config.ts`（node environment）给 Termux 用。
-> 被测代码只用 Web 标准 API，两个环境跑的是同一批断言。
-
 ## 已知边界
 
-- **KV 最终一致性**：写入后全球生效有约 10-60s 延迟。已用两层兜底抵消：
+- **KV 免费额度很紧**：读 100k/天，**list 仅 1k/天**。面板 5 秒轮询挂
+  8 小时会打爆 5 倍。已做三层缓解：`/api/jobs` 15 秒服务端缓存、
+  前端只在有在途任务时轮询（间隔 20 秒）、后端返回 `has_active`
+  让前端知道何时停。改这块时务必重算额度。
+- **KV 最终一致性**：写入后全球生效约 10-60s。已用两层兜底抵消：
   `/api/build` 同步等 run_id、`/api/status` 读缺失即回查 GitHub。
-  极端情况下 APP 前几次查询可能拿到旧状态，但绝不会「跑完了还显示处理中」
-  ——因为终态一旦写入就不会被覆盖回非终态。
+  终态一旦写入不会被覆盖回非终态，所以不会「跑完了还显示处理中」。
+- **run_id 匹配有极低概率绑错**：GitHub 的 dispatch 不返回 run_id，只能
+  按 `created_at` 匹配。同名 workflow 并发触发时可能绑到别人的 run 上。
+  cron 每分钟重试，且用 `created_at`（不是 `updated_at`）过滤以缩小窗口。
+- **只返回 `protect-*` 流水线**：`src/github.ts` 的 `BUILD_WORKFLOW_PREFIX`
+  是白名单。`apk-protect-action` 里新增辅助 workflow（如
+  `notify-json-mirror.yml`，负责 schema 镜像同步）不会出现在 APP 的下拉框里
+  ——它没有 `apk_url` 输入，不是加固流水线。改成多种命名时改这个常量。
+- **单仓库**：`github_owner`/`github_repo` 是单一坐标。多仓库需按 workflow
+  路由，属于后续扩展。
 - **GitHub Actions 并发额度**：免费账户有限。网关把 APP 轮询与 GitHub
   调用解耦（APP 只读 KV），但构建本身仍受 GitHub 侧并发限制。
-- **单仓库**：当前 `GITHUB_OWNER`/`GITHUB_REPO` 是单一坐标。多仓库需要
-  按 workflow 路由，属于后续扩展。
+- **本机（Termux）跑不了 `assembleDebug`**：`aapt2` 是 x86-64 二进制，
+  在 aarch64 上执行报 `Syntax error: word unexpected`。jian_box 侧只能
+  验证到 `compileDebugKotlin`，资源打包与 APK 产物需在 CI 或 PC 验证。
