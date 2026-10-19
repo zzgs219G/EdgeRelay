@@ -190,10 +190,18 @@
           >
             <div class="flex justify-between items-start mb-3">
               <div class="flex-1 pr-3 min-w-0">
+                <!-- 主行显示「勾了哪些模块」——那才是用户关心的。
+                     workflow 文件名只作副信息，因为 protect-modules.yml
+                     这种名字看不出勾选内容。 -->
                 <div class="text-[15px] font-bold text-gray-800 leading-tight mb-1 truncate-1">
-                  {{ j.workflow_file }}
+                  {{ j.modules?.length ? j.modules.join(' · ') : j.workflow_file }}
                 </div>
-                <div class="text-[11px] text-gray-400 font-mono">{{ j.job_id.slice(0, 8) }}</div>
+                <div class="text-[11px] text-gray-400 font-mono truncate-1">
+                  {{ j.job_id.slice(0, 8) }}
+                  <span v-if="j.modules?.length" class="not-italic opacity-70">
+                    · {{ j.workflow_file }}
+                  </span>
+                </div>
               </div>
               <div class="text-right flex-shrink-0">
                 <span
@@ -332,54 +340,83 @@ async function onLogout() {
 }
 
 /**
- * 轮询策略（KV 免费额度很紧，必须克制）。
+ * 轮询策略：间隔线性递增（5s、10s、15s…，上限 60s）。
  *
- * 免费额度：KV 读 100k/天、KV list 仅 1k/天。原实现 5 秒一次、
- * 不管有没有在途任务都轮，挂 8 小时约 5760 次 list——直接超 5 倍。
+ * 为什么递增而不是固定：
+ *   提交后的前几分钟变化最快（排队 → 分配 runner → 开始执行），值得盯紧；
+ *   进入 Dex2C 转译之类长步骤后，几十秒和一分钟看一次没差别。
  *
- * 现在的三条约束：
- *   1. 只在 has_active（后端算好的）为真时轮询，全部完成就停
- *   2. 间隔 20 秒而非 5 秒（构建本身要几分钟，无需秒级）
- *   3. 页面不可见时不轮；回到前台立刻补一次
- * 后端还有 15 秒的列表缓存兜底，即使多点几次也不落 KV。
+ * 40 分钟构建的次数对比：
+ *   固定 5s（最早实现）  480 次
+ *   固定 20s（上一版）   120 次
+ *   递增 + 上限 60s       46 次   ← 现在
+ *
+ * 加上限是因为不封顶的话间隔会无限增长：跑 40 分钟时间隔已到 200 秒，
+ * 那时"看进度"已无意义，而用户回来的第一件事是切前台（会补一次）。
+ *
+ * 另三条约束（KV 免费额度：读 100k/天、list 仅 1k/天）：
+ *   1. 只在 has_active 为真时轮询，全部完成立即停
+ *   2. 页面不可见不轮；回前台立刻补一次并重置间隔
+ *   3. 后端 15 秒列表缓存兜底，即使多点几次也不落 KV
  */
-const POLL_ACTIVE_MS = 20_000
+const POLL_STEP_MS = 5_000
+const POLL_MAX_MS = 60_000
+/** 安全上限：约 60 分钟。防某个 run 永久卡住时无限刷。 */
+const POLL_HARD_LIMIT = 120
+
 let timer = null
 let pollCount = 0
-/** 连续轮询上限：约 30 分钟。防止某个 run 卡住时无限刷。 */
-const MAX_POLLS = 90
+
+/** 第 n 次轮询的间隔：5s、10s、15s… 封顶 60s。 */
+function nextIntervalMs(n) {
+  return Math.min(POLL_STEP_MS * n, POLL_MAX_MS)
+}
 
 function stopPolling() {
-  if (timer) clearInterval(timer)
+  if (timer) clearTimeout(timer)
   timer = null
+}
+
+/**
+ * 用 setTimeout 递归而非 setInterval——间隔每次都要变，
+ * setInterval 固定周期做不到递增。
+ */
+function scheduleNext() {
+  stopPolling()
+  if (!job.hasActive) return
+  if (pollCount >= POLL_HARD_LIMIT) return
+
+  timer = setTimeout(async () => {
+    // 页面在后台：不计次、不发请求，等 visibilitychange 唤醒
+    if (document.visibilityState !== 'visible') return
+
+    pollCount++
+    await job.loadJobs({ onAuthLost })
+
+    // 全部完成就停，不再排下一次
+    if (!job.hasActive) {
+      stopPolling()
+      return
+    }
+    scheduleNext()
+  }, nextIntervalMs(pollCount + 1))
 }
 
 function startPolling() {
   stopPolling()
   if (!job.hasActive) return
-  timer = setInterval(async () => {
-    if (document.visibilityState !== 'visible') return
-    if (!job.hasActive) {
-      stopPolling()
-      return
-    }
-    if (++pollCount > MAX_POLLS) {
-      stopPolling()
-      return
-    }
-    await job.loadJobs({ onAuthLost })
-    if (!job.hasActive) stopPolling()
-  }, POLL_ACTIVE_MS)
+  scheduleNext()
 }
 
 function onVisibility() {
   if (document.visibilityState === 'visible') {
-    // 回到前台补一次，然后按需重启定时器
+    // 回前台立刻补一次并把间隔重置回 5s——用户此刻正想看最新状态
     job.loadJobs({ onAuthLost }).then(() => {
       pollCount = 0
       startPolling()
     })
   } else {
+    // 后台期间不再排下一次；定时器已触发的那次会在回调里自查可见性
     stopPolling()
   }
 }

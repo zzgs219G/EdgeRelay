@@ -75,6 +75,7 @@ export async function handleListJobs(env: Env, url: URL): Promise<Response> {
       created_at_ms: j.created_at_ms,
       workflow_file: j.workflow_file,
       display_name: j.display_name,
+      modules: j.modules ?? [],
     })),
     // 前端据此决定还要不要继续轮询：没有在途任务就停下来。
     has_active: jobs.some((j) => j.status !== "completed"),

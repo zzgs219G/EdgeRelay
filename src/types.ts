@@ -33,6 +33,12 @@ export interface BuildJob {
   dpt_extra_args: string;
   /** APP 侧的展示名（如「简盒·v1.2.3」），不参与 GitHub 调用。 */
   display_name: string;
+  /**
+   * 从 protect_config 解析出的已启用模块标签，如 ["签名校验","Dex2C"]。
+   * 供任务列表直接展示——否则只看到 workflow 文件名，看不出勾了什么。
+   * 解析失败时为空数组，前端退回显示 workflow_file。
+   */
+  modules?: string[];
   /** 任务状态机：queued → in_progress → completed。 */
   status: JobStatus;
   /** run 的 conclusion：success / failure / cancelled / ...；未完成为 null。 */

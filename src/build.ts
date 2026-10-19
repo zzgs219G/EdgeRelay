@@ -21,6 +21,7 @@ import {
   listRecentRuns,
 } from "./github";
 import { newJobId, putJob } from "./kv_store";
+import { describeModules } from "./modules";
 import { invalidateJobsCache } from "./jobs";
 import { error, json } from "./router";
 
@@ -57,6 +58,8 @@ export async function handleBuild(
     protect_config: body.protect_config,
     dpt_extra_args: body.dpt_extra_args ?? "",
     display_name: body.display_name ?? "",
+    // 解析「勾了哪些模块」用于任务列表展示。失败不阻塞构建（返回 []）。
+    modules: await describeModules(env, body.protect_config),
     status: "queued",
     conclusion: null,
     download_url: null,
