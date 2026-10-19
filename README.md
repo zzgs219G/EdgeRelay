@@ -265,15 +265,36 @@ curl https://edge-relay.wu.engineer/health
 
 ### A. Cloudflare Workers Builds（当前在用）
 
-控制台 → Worker → Settings → Build，**两个字段都要填**：
+控制台 → Worker → Settings → Build，**只填一个字段，另一个必须留空**：
 
 | 字段 | 填什么 |
 |---|---|
-| **Build command** | `npm --prefix frontend run build` |
-| **Deploy command** | `npx wrangler deploy` |
+| **Build command** | **留空** |
+| **Deploy command** | `npm run deploy` |
 
-只填 Deploy command 是不行的——那是默认值，不会碰前端。Root directory
-留空（仓库根就是根）。
+Build command 故意留空，所有事情交给 `npm run deploy` 一个命令做。它内部按
+顺序执行：`npm --prefix frontend ci`（装前端依赖）→ `vite build` →
+`wrangler deploy`。
+
+**为什么 Build command 必须留空**：CF Workers Builds 只装根目录的依赖，
+不会装 `frontend/` 的。如果 Build command 填 `npm --prefix frontend run build`，
+它会在没装前端依赖的情况下直接跑 vite，报
+`Cannot find package '@vitejs/plugin-vue'`。而 `npm run deploy` 里的
+`npm --prefix frontend ci` 先把这步补上了。
+
+四个常见错法（都真实踩过）：
+
+1. **Build command 填 `npm --prefix frontend run build`** → 前端依赖没装，
+   `Cannot find package '@vitejs/plugin-vue' imported from vite.config.js`
+2. **Build command 留空但 Deploy command 填 `npx wrangler deploy`** →
+   `frontend/dist` 不存在，报
+   `The directory specified by the "assets.directory" field ... does not exist`
+3. **Deploy command 填 `npx run deploy`** → `npm error could not determine
+   executable to run`。`run` 不是可执行文件，`npx` 后面只能跟包名，
+   不能跟 npm 自己的子命令
+4. **两个字段都填** → 前端构建跑两遍，浪费一分多钟
+
+Root directory 留空（仓库根就是根）。
 
 ### B. GitHub Actions（`.github/workflows/deploy.yml`）
 
@@ -290,7 +311,7 @@ push 到 main 自动跑：装依赖 → 类型检查 → 单元测试 → 构建
 **A. Cloudflare Workers Builds（控制台配，push 自动 `npx wrangler deploy`）**
 在 CF 控制台 Workers → 你的 Worker → Settings → Build 里连 Git 仓库。
 Build command 填 `npm --prefix frontend run build`，Deploy command 填
-`npx wrangler deploy`。Node 版本 22。
+`npm run deploy`（见上面「三个常见错法」）。Node 版本 22。
 
 **B. GitHub Actions（`.github/workflows/deploy.yml`，配置可见可 review）**
 push 到 main 自动跑：类型检查 → 单元测试 → 部署。

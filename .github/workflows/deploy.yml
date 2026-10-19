@@ -55,6 +55,12 @@ jobs:
       - name: 构建前端
         run: npm --prefix frontend run build
 
+      # frontend/dist 提交在 git 里（CF Build command 可能没填，靠它兜底）。
+      # 这里校验它与源码同步：改了 Vue 却忘了重新 build，会让 CF 静默部署
+      # 旧前端，所以必须显式失败而不是放过去。
+      - name: 校验 dist 与源码同步
+        run: node scripts/check-dist.mjs
+
   deploy:
     needs: verify
     # 只在 push 到 main 时部署；PR 只验证不部署。
