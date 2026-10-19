@@ -5,9 +5,11 @@
  * 因此用相对路径，不写死域名。
  *
  * 登录态：session cookie（HttpOnly，由 Worker 在 POST /login 时种下）。
- * 浏览器自动携带，前端代码碰不到 cookie 内容——比 vue-faka 那种把密码
- * 存 localStorage 再每次请求直传的做法安全：XSS 读不到 HttpOnly cookie，
- * 且令牌可被服务端随时吊销。
+ * 浏览器自动携带，前端代码碰不到 cookie 内容——XSS 读不到，且服务端
+ * 旋转密码即可logout 所有会话。
+ *
+ * 所有接口都返回 JSON（包括 /login、/logout），不再有 HTML 响应，
+ * 因此这里统一 res.json()。
  */
 
 async function request(path, options = {}) {
@@ -29,7 +31,7 @@ async function request(path, options = {}) {
   try {
     data = await res.json()
   } catch {
-    // 非 JSON 响应（如 303 重定向）保持空对象
+    // 理论上不会发生；非 JSON 响应（如反代返回 HTML 错误页）时兜底
   }
 
   if (!res.ok) {
@@ -42,13 +44,14 @@ async function request(path, options = {}) {
 }
 
 export const api = {
-  /** 登录。Worker 会种下 session cookie，无需前端处理令牌。 */
+  /** 探测登录态。不鉴权，永远返回 {logged:boolean}。 */
+  session() {
+    return request('/api/session')
+  },
+
+  /** 登录。成功时 Worker 种下 session cookie。 */
   login(password) {
-    return request('/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ password }),
-    })
+    return request('/login', { method: 'POST', body: { password } })
   },
 
   logout() {

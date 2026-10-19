@@ -11,9 +11,8 @@ import { handleBuild } from "./build";
 import { handleStatus } from "./status";
 import { handleWorkflows } from "./workflows";
 import { reconcileOpenJobs } from "./reconcile";
-import { handleLogin, handleLogout, hasValidSession, renderLoginPage } from "./ui";
+import { handleLogin, handleLogout, handleSession, hasValidSession } from "./ui";
 import { handleListJobs } from "./jobs";
-import { htmlResponse } from "./http";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -33,33 +32,41 @@ export default {
       return await healthCheck(env);
     }
 
-    // 登录 / 登出：不鉴权（它们就是鉴权的一部分）。
+    // 登录 / 登出 / 会话探测：纯 JSON，不鉴权（它们就是鉴权的一部分）。
+    //
+    // 页面只由 Vue 前端实现一份，Worker 不返回任何 HTML——历史上
+    // Worker 手写过一个登录页，与 Vue 的 Login.vue 并存，导致"两个
+    // 登录页"（未登录看到 Worker 那个，登录后看到 Vue 那个）。
     if (url.pathname === "/login" && request.method === "POST") {
       return await handleLogin(request, env);
     }
     if (url.pathname === "/logout" && request.method === "POST") {
       return handleLogout();
     }
+    if (url.pathname === "/api/session" && request.method === "GET") {
+      return await handleSession(request, env);
+    }
 
-    // 根路径与 SPA 路由：未登录给登录页，已登录放行给 assets。
+    // 其余非 /api/ 的 GET 一律交给 assets 里的 SPA。
     //
-    // 为什么把 /dashboard 和所有未匹配 GET 一起放行：assets 配了
-    // not_found_handling = "single-page-application"，未命中静态文件的
-    // 路径本该由它回 index.html 交给 vue-router。但 run_worker_first = true
-    // 让这些请求全都先经过 Worker——Worker 一旦在这里返回 JSON 404，
-    // assets 的 SPA 兜底就永远没机会跑。所以只在自己确实该拦的路径上拦。
+    // run_worker_first = true 让所有请求先过 Worker，而 assets 配了
+    // not_found_handling = "single-page-application"。Worker 若在这里
+    // 返回 JSON 404，SPA 兜底就永远没机会跑，/dashboard、/assets/*.js、
+    // 任何深链全会变成一串 JSON。
     //
-    // 这也是"打开网页不该报 RELAY_TOKEN 未配置"的关键——页面本身与
-    // 后端 secret 无关，secret 缺失只在调 /api/* 时才暴露。
+    // 登录与否由 vue-router 判断：未登录渲染 Login.vue，已登录渲染
+    // Dashboard.vue。Worker 不再关心页面该显示什么。
     if (request.method === "GET" && !url.pathname.startsWith("/api/")) {
-      if (url.pathname === "/" && !(await hasValidSession(request, env))) {
-        return htmlResponse(renderLoginPage());
-      }
       if (env.ASSETS) return env.ASSETS.fetch(request);
-      // ASSETS 未绑定（本地 dev 或配错了）：至少给个能看的页面。
-      return url.pathname === "/"
-        ? htmlResponse(renderLoginPage())
-        : htmlResponse(renderLoginPage(`路径 ${url.pathname} 不存在`), 404);
+      // ASSETS 未绑定（本地 dev 或配错了）：给出可诊断的提示。
+      return json(
+        {
+          ok: false,
+          error: "静态资源未绑定：wrangler.toml 的 [assets] 或 frontend/dist 缺失",
+          path: url.pathname,
+        },
+        503,
+      );
     }
 
     // 鉴权 —— 只拦 /api/。

@@ -1,13 +1,17 @@
 /**
- * 前端层：登录页 HTML + session 管理。
+ * 会话与登录：纯 JSON API，不返回任何 HTML。
  *
- * 为什么 Worker 里还有一个 HTML 页面：assets 托管 Vue 构建产物后，
- * /api/* 走 Worker，其余走静态资源。但「未登录时打开 /」需要 Worker
- * 决定给登录页还是让 SPA 自己路由——这里直接由 Worker 返回一个
- * 极简登录页，避免为了一个登录表单把整个 Vue bundle 都拉下来。
+ * 曾经的错误设计：Worker 里手写了一个 HTML 登录页，Vue 里又有一个
+ * Login.vue——于是出现"两个登录页"（未登录看到 Worker 那个，登录后
+ * 看到 Vue 那个）。页面只该有一个实现，归前端。
  *
- * 登录成功后种 HttpOnly session cookie，前端 Vue 应用通过
- * /api/jobs 探测登录态（200=已登录，401=未登录）。
+ * 现在：
+ *   POST /login   {password} → 200 {ok:true} + Set-Cookie，或 401 {}
+ *   POST /logout             → 200 {ok:true} + 清 cookie
+ *   GET  /api/session        → {logged:boolean}，供前端启动时探测
+ *
+ * 所有页面路由（/、/dashboard、任意深链）一律交给 assets 里的 Vue SPA，
+ * 由 vue-router 决定渲染登录页还是控制台。
  */
 
 import type { Env } from "./types";
@@ -24,8 +28,8 @@ function arrayBufferToHex(buf: ArrayBuffer): string {
 
 async function hmacSign(secret: string, payload: string): Promise<string> {
   if (!secret) {
-    // crypto.subtle.importKey 对空密钥抛的 DataError 信息（"key length (0)"）
-    // 完全指不到"secret 没配"上，所以在这里提前拦住并说清楚。
+    // crypto.subtle.importKey 对空密钥抛的 DataError（"key length (0)"）
+    // 指不到"secret 没配"上，提前拦住并说清楚。
     throw new Error("HMAC 密钥为空：RELAY_PASSWORD secret 未配置");
   }
   const key = await crypto.subtle.importKey(
@@ -63,19 +67,16 @@ export function readCookie(request: Request, name: string): string {
 /**
  * session cookie 的 HMAC 签名密钥。
  *
- * 从 RELAY_PASSWORD 派生，而不是用 RELAY_TOKEN——那两个是不同用途的
- * secret：RELAY_PASSWORD 是浏览器登录凭据，RELAY_TOKEN 是 APP 调 /api/*
- * 的机器令牌。面板登录只该依赖密码，缺 RELAY_TOKEN 不该让面板也登不进去。
- *
- * 用 HKDF 式的 info 标签把「密码」和「签名密钥」两个角色分开，避免同一份
- * 密钥材料既当口令又当 MAC key。
+ * 从 RELAY_PASSWORD 派生，而不是 RELAY_TOKEN——那两个是不同用途的
+ * secret：RELAY_PASSWORD 是浏览器登录凭据，RELAY_TOKEN 是 APP 调
+ * /api/* 的机器令牌。面板登录只该依赖密码，缺 RELAY_TOKEN 不该让
+ * 面板也登不进去。
  */
 function sessionSecret(env: Env): string {
   const pw = env.RELAY_PASSWORD ?? "";
   const token = env.RELAY_TOKEN ?? "";
-  // 派生标签：固定串 + token 是否存在。配了 token 就把它并进标签，
-  // 这样旋转 RELAY_TOKEN 仍会让所有已签发的 session 失效（旧 cookie 的
-  // 签名是用带旧 token 的标签算的，验不过）。
+  // 配了 token 就并进标签，这样旋转 RELAY_TOKEN 仍会让所有已签发
+  // session 失效（旧 cookie 的签名用带旧 token 的标签算的，验不过）。
   const info = token ? `relay-session-v1+tok:${token}` : "relay-session-v1";
   return `${info}:pw:${pw}`;
 }
@@ -116,128 +117,15 @@ export async function hasValidSession(request: Request, env: Env): Promise<boole
   return verifySessionCookie(env, readCookie(request, SESSION_COOKIE_NAME));
 }
 
-function html(body: string, status = 200): Response {
-  return new Response(body, {
+function json(data: unknown, status = 200, extraHeaders: Record<string, string> = {}): Response {
+  return new Response(JSON.stringify(data), {
     status,
-    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      ...extraHeaders,
+    },
   });
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-/** 登录页（极简，无外部依赖）。 */
-export function renderLoginPage(errorMessage?: string): string {
-  return `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>EdgeRelay · 登录</title>
-<style>
-body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
-  background:#0b0e14;color:#e6e9ef;font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
-.card{width:100%;max-width:340px;background:#141922;border:1px solid #232a36;border-radius:16px;padding:32px 28px}
-h1{font-size:20px;margin:0}
-.sub{color:#8b94a7;font-size:13px;margin:4px 0 24px}
-input{width:100%;padding:11px 12px;background:#0b0e14;color:#e6e9ef;
-  border:1px solid #232a36;border-radius:8px;font-size:14px}
-input:focus{outline:none;border-color:#4f8cff}
-button{width:100%;padding:11px;margin-top:14px;background:#4f8cff;color:#fff;
-  border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer}
-.err{color:#f85149;font-size:13px;margin-top:12px;min-height:20px}
-.hint{color:#8b94a7;font-size:12px;margin-top:16px}
-code{font-family:ui-monospace,Menlo,monospace}
-</style>
-</head>
-<body>
-<div class="card">
-  <h1>EdgeRelay</h1>
-  <p class="sub">APK 构建网关 · 管理控制台</p>
-  <form method="POST" action="/login" autocomplete="off">
-    <input type="password" name="password" placeholder="请输入管理密码" required autofocus>
-    <button type="submit">进入控制台</button>
-  </form>
-  <div class="err">${errorMessage ? escapeHtml(errorMessage) : ""}</div>
-  <p class="hint">密码由 <code>wrangler secret put RELAY_PASSWORD</code> 设置</p>
-</div>
-</body>
-</html>`;
-}
-
-/** 登录成功页（meta refresh 进 SPA）。 */
-function renderLoginSuccessPage(): string {
-  return `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta http-equiv="refresh" content="0;url=/">
-<title>登录成功</title>
-</head>
-<body style="background:#0b0e14;color:#8b94a7;font-family:sans-serif;text-align:center;padding-top:40vh">
-正在进入控制台…
-</body>
-</html>`;
-}
-
-/**
- * POST /login。
- *
- * 只依赖 RELAY_PASSWORD。RELAY_TOKEN 是 APP 调 /api/* 用的机器令牌，
- * 与面板登录无关——缺它只让 APP 用不了，面板照常能登。
- *
- * 密码不匹配时统一慢响应约 750ms，压制暴力破解吞吐。
- * 未配置 RELAY_PASSWORD 时明确报错，而不是接受任意密码。
- */
-export async function handleLogin(request: Request, env: Env): Promise<Response> {
-  const expected = env.RELAY_PASSWORD;
-  if (!expected) {
-    return html(
-      renderLoginPage("服务端未配置 RELAY_PASSWORD，请先执行 wrangler secret put RELAY_PASSWORD"),
-      500,
-    );
-  }
-
-  let provided = "";
-  try {
-    const form = await request.formData();
-    const pw = form.get("password");
-    provided = typeof pw === "string" ? pw : "";
-  } catch {
-    return html(renderLoginPage("请求格式错误"), 400);
-  }
-
-  // 无论成败都慢同样时长，避免用响应时间区分"密码错了"与"密码对了"。
-  await new Promise((r) => setTimeout(r, 750));
-
-  if (!constantTimeEqual(provided, expected)) {
-    return html(renderLoginPage("密码不正确"), 401);
-  }
-
-  const ttl = sessionTtlSec(env);
-  const cookie = await buildSessionCookie(env, ttl);
-  const headers = new Headers({ "set-cookie": buildSetCookie(cookie, ttl) });
-  headers.set("location", "/dashboard");
-  return new Response(renderLoginSuccessPage(), {
-    status: 303,
-    headers,
-  });
-}
-
-/** POST /logout：清除 cookie 回登录页。 */
-export function handleLogout(): Response {
-  const headers = new Headers();
-  headers.set(
-    "set-cookie",
-    `${SESSION_COOKIE_NAME}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
-  );
-  headers.set("location", "/");
-  return new Response(null, { status: 303, headers });
 }
 
 function buildSetCookie(value: string, ttlSec: number): string {
@@ -249,4 +137,60 @@ function buildSetCookie(value: string, ttlSec: number): string {
     "SameSite=Lax",
     `Max-Age=${ttlSec}`,
   ].join("; ");
+}
+
+/**
+ * POST /login
+ *
+ * body: {"password": "..."}（JSON）或 form-urlencoded 的 password 字段
+ * 返回: 200 {ok:true} / 401 {ok:false,error} / 500 {ok:false,error}
+ *
+ * 只依赖 RELAY_PASSWORD。密码不匹配时统一慢响应约 750ms，压制暴力破解。
+ */
+export async function handleLogin(request: Request, env: Env): Promise<Response> {
+  const expected = env.RELAY_PASSWORD;
+  if (!expected) {
+    return json(
+      { ok: false, error: "服务端未配置 RELAY_PASSWORD，请先执行 wrangler secret put RELAY_PASSWORD" },
+      500,
+    );
+  }
+
+  let provided = "";
+  const contentType = request.headers.get("content-type") ?? "";
+  try {
+    if (contentType.includes("application/json")) {
+      const body = (await request.json()) as { password?: unknown };
+      provided = typeof body.password === "string" ? body.password : "";
+    } else {
+      const form = await request.formData();
+      const pw = form.get("password");
+      provided = typeof pw === "string" ? pw : "";
+    }
+  } catch {
+    return json({ ok: false, error: "请求格式错误" }, 400);
+  }
+
+  // 无论成败都慢同样时长，避免用响应时间区分"密码错了"与"密码对了"。
+  await new Promise((r) => setTimeout(r, 750));
+
+  if (!constantTimeEqual(provided, expected)) {
+    return json({ ok: false, error: "密码不正确" }, 401);
+  }
+
+  const ttl = sessionTtlSec(env);
+  const cookie = await buildSessionCookie(env, ttl);
+  return json({ ok: true }, 200, { "set-cookie": buildSetCookie(cookie, ttl) });
+}
+
+/** POST /logout：清除 cookie。返回 JSON，不用 303——前端用 fetch 调它。 */
+export function handleLogout(): Response {
+  return json({ ok: true }, 200, {
+    "set-cookie": `${SESSION_COOKIE_NAME}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
+  });
+}
+
+/** GET /api/session：供前端启动时探测登录态。 */
+export async function handleSession(request: Request, env: Env): Promise<Response> {
+  return json({ logged: await hasValidSession(request, env) });
 }

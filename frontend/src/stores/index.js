@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, reactive } from 'vue'
+import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '../api'
 
@@ -7,6 +7,8 @@ export const useAuthStore = defineStore('auth', () => {
   const logged = ref(false)
   const checking = ref(true)
   const health = ref(null)
+  /** probe() 是否已跑过，避免路由守卫重复请求 */
+  const ready = ref(false)
 
   function toast(msg, type = 'success') {
     ElMessage.closeAll()
@@ -15,24 +17,23 @@ export const useAuthStore = defineStore('auth', () => {
 
   /**
    * 探测登录态与后端健康度。
-   *
-   * 用一个需要鉴权的接口（/api/jobs）判断是否已登录：
-   *   200 → 已登录
-   *   401 → 未登录（正常，转登录页）
-   *   其它 → 后端异常，把 problems 显示出来
-   * 这样打开页面就能直接知道后端缺不缺 secret，而不是等点登录才报错。
+   *   /api/session → {logged}   （不鉴权，永远 200）
+   *   /health      → {ok,problems}
+   * 两者都不需要已登录，所以页面一打开就能知道该渲染登录页还是控制台、
+   * 以及后端缺不缺 secret。
    */
   async function probe() {
     checking.value = true
     try {
-      const h = await api.health().catch(() => null)
+      const [s, h] = await Promise.all([
+        api.session().catch(() => ({ logged: false })),
+        api.health().catch(() => null),
+      ])
+      logged.value = s?.logged === true
       health.value = h
-      await api.jobs(1)
-      logged.value = true
-    } catch (e) {
-      logged.value = e.status !== 401
     } finally {
       checking.value = false
+      ready.value = true
     }
   }
 
@@ -44,6 +45,8 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       await api.login(password)
       logged.value = true
+      // 登录成功后刷新一次健康状态（可能刚补了 secret）
+      api.health().then((h) => (health.value = h)).catch(() => {})
       toast('已进入控制台')
       return true
     } catch (e) {
@@ -61,7 +64,7 @@ export const useAuthStore = defineStore('auth', () => {
     logged.value = false
   }
 
-  return { logged, checking, health, toast, probe, login, logout }
+  return { logged, checking, health, ready, toast, probe, login, logout }
 })
 
 export const useJobStore = defineStore('job', () => {

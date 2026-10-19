@@ -68,7 +68,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores'
 
@@ -77,17 +77,13 @@ const auth = useAuthStore()
 const password = ref('')
 const submitting = ref(false)
 
-onMounted(async () => {
-  await auth.probe()
-  if (auth.logged) router.replace('/dashboard')
-})
-
+// 登录态探测与跳转由 router.beforeEach 统一处理——这里只管提交表单。
 async function onLogin() {
   if (submitting.value) return
   submitting.value = true
   try {
     const ok = await auth.login(password.value)
-    if (ok) router.replace('/dashboard')
+    if (ok) router.replace({ name: 'dashboard' })
   } finally {
     submitting.value = false
   }

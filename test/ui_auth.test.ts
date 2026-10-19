@@ -55,6 +55,22 @@ function req(path: string, init: RequestInit = {}, headers: Record<string, strin
   });
 }
 
+/**
+ * 伪 ASSETS binding：记录被请求的路径，返回可辨识的响应体。
+ * 用来断言"Worker 把请求交给 assets 了"，而不是自己返回 JSON 或 HTML。
+ */
+function assetsSpy(): { fetcher: Fetcher; seen: string[] } {
+  const seen: string[] = [];
+  const fetcher = {
+    fetch: async (r: Request) => {
+      const p = new URL(r.url).pathname;
+      seen.push(p);
+      return new Response(`asset:${p}`, { headers: { "content-type": "text/plain" } });
+    },
+  } as unknown as Fetcher;
+  return { fetcher, seen };
+}
+
 // ── 会话原语 ────────────────────────────────────────────────────────
 
 describe("session cookie", () => {
@@ -116,64 +132,85 @@ describe("session cookie", () => {
 // ── 根路径：核心回归 ────────────────────────────────────────────────
 
 describe("GET / — 打开网页", () => {
-  it("returns a login page when no session, even with secrets missing", async () => {
-    // 这是用户实际遇到的问题：RELAY_TOKEN / RELAY_PASSWORD 都没配，
-    // 打开网页却报 "RELAY_TOKEN 未配置"。现在必须给登录页。
+  it("hands / to the SPA, never returning an error page for missing secrets", async () => {
+    // 用户实际遇到的问题：RELAY_TOKEN / RELAY_PASSWORD 都没配，打开网页
+    // 却报 "RELAY_TOKEN 未配置"。现在 Worker 不返回任何 HTML——页面完全
+    // 由 assets 里的 Vue 提供，与后端 secret 无关。
+    const { fetcher, seen } = assetsSpy();
     const resp = await worker.fetch(
       req("/"),
-      env({ RELAY_TOKEN: "", RELAY_PASSWORD: "" }),
+      env({ ASSETS: fetcher, RELAY_TOKEN: "", RELAY_PASSWORD: "" }),
       {} as ExecutionContext,
     );
     expect(resp.status).toBe(200);
-    expect(resp.headers.get("content-type")).toContain("text/html");
-    const html = await resp.text();
-    expect(html).toContain("EdgeRelay");
-    expect(html).toContain("管理密码");
-    // 绝不能把后端 secret 的状态泄漏到页面上当成错误
-    expect(html).not.toContain("RELAY_TOKEN 未配置");
+    expect(seen).toEqual(["/"]);
+    const text = await resp.text();
+    expect(text).not.toContain("RELAY_TOKEN 未配置");
   });
 
-  it("does not require auth to see the login page", async () => {
+  it("does not require auth to reach the SPA", async () => {
+    const { fetcher } = assetsSpy();
+    const resp = await worker.fetch(req("/"), env({ ASSETS: fetcher }), {} as ExecutionContext);
+    expect(resp.status).toBe(200);
+  });
+
+  it("does not gate the SPA on session state", async () => {
+    // 有 cookie 与没 cookie 都该拿到同一份 index.html——登录与否由
+    // vue-router 判断，Worker 不参与。
+    const { fetcher, seen } = assetsSpy();
+    const cookie = await buildSessionCookie(env(), 3600);
+    const withCookie = await worker.fetch(
+      req("/", {}, { cookie: `${SESSION_COOKIE_NAME}=${cookie}` }),
+      env({ ASSETS: fetcher }),
+      {} as ExecutionContext,
+    );
+    const without = await worker.fetch(
+      req("/"),
+      env({ ASSETS: fetcher }),
+      {} as ExecutionContext,
+    );
+    expect(withCookie.status).toBe(200);
+    expect(without.status).toBe(200);
+    expect(seen).toEqual(["/", "/"]);
+  });
+
+  it("returns a diagnosable 503 when ASSETS is unbound", async () => {
+    // 本地 dev 或 [assets] 配错的情况。Worker 不再伪造一个 HTML 登录页，
+    // 而是明确说明静态资源没绑——比给一个"看起来能用但其实不是真前端"
+    // 的页面更容易排障。
     const resp = await worker.fetch(req("/"), env(), {} as ExecutionContext);
-    expect(resp.status).toBe(200);
-  });
-
-  it("offers ASSETS to a logged-in browser", async () => {
-    const cookie = await buildSessionCookie(env(), 3600);
-    const fetched: string[] = [];
-    const assets = {
-      fetch: async (r: Request) => {
-        fetched.push(new URL(r.url).pathname);
-        return new Response("<html>SPA</html>", { headers: { "content-type": "text/html" } });
-      },
-    } as unknown as Fetcher;
-
-    const resp = await worker.fetch(
-      req("/", {}, { cookie: `${SESSION_COOKIE_NAME}=${cookie}` }),
-      env({ ASSETS: assets }),
-      {} as ExecutionContext,
-    );
-    expect(resp.status).toBe(200);
-    expect(await resp.text()).toContain("SPA");
-    expect(fetched).toEqual(["/"]);
-  });
-
-  it("falls back to the login page when ASSETS is unbound but session is valid", async () => {
-    const cookie = await buildSessionCookie(env(), 3600);
-    const resp = await worker.fetch(
-      req("/", {}, { cookie: `${SESSION_COOKIE_NAME}=${cookie}` }),
-      env(),
-      {} as ExecutionContext,
-    );
-    expect(resp.status).toBe(200);
-    expect(await resp.text()).toContain("EdgeRelay");
+    expect(resp.status).toBe(503);
+    const body = (await resp.json()) as { error: string };
+    expect(body.error).toContain("静态资源未绑定");
   });
 });
 
 // ── 登录 / 登出 ─────────────────────────────────────────────────────
 
 describe("POST /login", () => {
-  it("sets an HttpOnly session cookie on the right password", async () => {
+  it("sets an HttpOnly session cookie and returns JSON on the right password", async () => {
+    const resp = await worker.fetch(
+      req("/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ password: "test-password" }),
+      }),
+      env(),
+      {} as ExecutionContext,
+    );
+    // 纯 JSON：不再 303 重定向——前端用 fetch 调它，由 vue-router 跳转。
+    expect(resp.status).toBe(200);
+    expect(resp.headers.get("content-type")).toContain("application/json");
+    expect((await resp.json() as { ok: boolean }).ok).toBe(true);
+
+    const setCookie = resp.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain(`${SESSION_COOKIE_NAME}=`);
+    expect(setCookie).toContain("HttpOnly");
+    expect(setCookie).toContain("Secure");
+    expect(setCookie).toContain("SameSite=Lax");
+  });
+
+  it("accepts form-urlencoded too (progressive fallback)", async () => {
     const resp = await worker.fetch(
       req("/login", {
         method: "POST",
@@ -182,13 +219,8 @@ describe("POST /login", () => {
       env(),
       {} as ExecutionContext,
     );
-    expect(resp.status).toBe(303);
-    expect(resp.headers.get("location")).toBe("/dashboard");
-    const setCookie = resp.headers.get("set-cookie") ?? "";
-    expect(setCookie).toContain(`${SESSION_COOKIE_NAME}=`);
-    expect(setCookie).toContain("HttpOnly");
-    expect(setCookie).toContain("Secure");
-    expect(setCookie).toContain("SameSite=Lax");
+    expect(resp.status).toBe(200);
+    expect((await resp.json() as { ok: boolean }).ok).toBe(true);
   });
 
   it("rejects a wrong password without setting a cookie", async () => {
@@ -202,7 +234,7 @@ describe("POST /login", () => {
     );
     expect(resp.status).toBe(401);
     expect(resp.headers.get("set-cookie")).toBeNull();
-    expect(await resp.text()).toContain("密码不正确");
+    expect((await resp.json() as { error: string }).error).toContain("密码不正确");
   });
 
   it("logs in fine with RELAY_TOKEN unset (panel must not depend on it)", async () => {
@@ -217,7 +249,8 @@ describe("POST /login", () => {
       env({ RELAY_TOKEN: "" }),
       {} as ExecutionContext,
     );
-    expect(resp.status).toBe(303);
+    expect(resp.status).toBe(200);
+    expect((await resp.json() as { ok: boolean }).ok).toBe(true);
     expect(resp.headers.get("set-cookie")).toContain(SESSION_COOKIE_NAME);
   });
 
@@ -231,38 +264,28 @@ describe("POST /login", () => {
       {} as ExecutionContext,
     );
     expect(resp.status).toBe(500);
-    expect(await resp.text()).toContain("RELAY_PASSWORD");
+    expect((await resp.json() as { error: string }).error).toContain("RELAY_PASSWORD");
   });
 });
 
 describe("POST /logout", () => {
-  it("clears the cookie and redirects", async () => {
+  it("clears the cookie and returns JSON", async () => {
     const resp = await worker.fetch(
       req("/logout", { method: "POST" }),
       env(),
       {} as ExecutionContext,
     );
-    expect(resp.status).toBe(303);
-    const setCookie = resp.headers.get("set-cookie") ?? "";
-    expect(setCookie).toContain("Max-Age=0");
+    // 前端用 fetch 调它，所以必须是 200 + JSON，不能是 303 重定向
+    // （fetch 会自动跟随 303 并拿到 HTML，导致 res.json() 失败）。
+    expect(resp.status).toBe(200);
+    expect((await resp.json() as { ok: boolean }).ok).toBe(true);
+    expect(resp.headers.get("set-cookie") ?? "").toContain("Max-Age=0");
   });
 });
 
 // ── SPA 路由与静态资源必须交给 assets ──────────────────────────────
 
 describe("SPA routes fall through to assets", () => {
-  function assetsSpy(): { fetcher: Fetcher; seen: string[] } {
-    const seen: string[] = [];
-    const fetcher = {
-      fetch: async (r: Request) => {
-        const p = new URL(r.url).pathname;
-        seen.push(p);
-        return new Response(`asset:${p}`, { headers: { "content-type": "text/plain" } });
-      },
-    } as unknown as Fetcher;
-    return { fetcher, seen };
-  }
-
   it("serves /dashboard from assets instead of 404 JSON", async () => {
     // 线上事故：登录成功 303 到 /dashboard，Worker 没有该路由，
     // default 分支返回 {"success":false,"error":"未知路径 GET /dashboard"}
@@ -331,7 +354,9 @@ describe("SPA routes fall through to assets", () => {
     expect(seen).toEqual(["/"]);
   });
 
-  it("gives the login page at / when not logged in, even with ASSETS bound", async () => {
+  it("gives the SPA at / even when not logged in", async () => {
+    // 登录与否由 vue-router 判断，Worker 不再插手。这样登录页只有
+    // Login.vue 一个实现，不会出现"两个不同样式的登录页"。
     const { fetcher, seen } = assetsSpy();
     const resp = await worker.fetch(
       req("/"),
@@ -339,10 +364,7 @@ describe("SPA routes fall through to assets", () => {
       {} as ExecutionContext,
     );
     expect(resp.status).toBe(200);
-    expect(resp.headers.get("content-type")).toContain("text/html");
-    expect(await resp.text()).toContain("EdgeRelay");
-    // 未登录不该把 SPA 吐出去
-    expect(seen).toEqual([]);
+    expect(seen).toEqual(["/"]);
   });
 });
 

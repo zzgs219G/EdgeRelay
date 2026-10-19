@@ -304,7 +304,7 @@ async function onBuild() {
 
 async function onLogout() {
   await auth.logout()
-  router.replace('/')
+  router.replace({ name: 'login' })
 }
 
 // 轮询在途任务：5 秒一次，只读 KV，不烧 GitHub 配额。
