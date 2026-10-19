@@ -84,13 +84,17 @@ export async function handleBuild(
       error: msg,
       updated_at_ms: Date.now(),
     });
+    // 用 200 而不是 502：dispatch 失败是**业务失败**（token 过期、
+    // 参数不匹配、仓库不存在），不是网关故障。用 5xx 会让客户端把它
+    // 当成"网关挂了"而重试整条请求，反而放大问题。
+    // 任务已落库且标记为 completed/failure，APP 也能通过 jobId 查到。
     const resp: BuildResponse = {
       success: false,
       job_id: jobId,
       status: "completed",
       error: msg,
     };
-    return json(resp, 502);
+    return json(resp, 200);
   }
 
   // 同步等 run_id（不占满整个请求预算，失败可丢弃）。

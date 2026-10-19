@@ -135,8 +135,16 @@ export interface Env {
   GITHUB_REPO: string;
   /** 触发分支，默认 main。 */
   GITHUB_REF?: string;
-  /** R2 公开域名，用于把 GitHub 注解里被打码的 URL 补全。 */
+  /** R2 公开域名，用于把 GitHub 注解里被打码的 URL 补全，也用于拼产物链接。 */
   R2_PUBLIC_DOMAIN?: string;
+  /** R2 S3 API 端点，形如 https://<account>.r2.cloudflarestorage.com */
+  R2_ENDPOINT?: string;
+  /** R2 存储桶名。 */
+  R2_BUCKET_NAME?: string;
+  /** R2 Access Key ID（仅存网关，绝不下发 APP）。 */
+  R2_ACCESS_KEY_ID?: string;
+  /** R2 Secret Access Key（仅存网关，绝不下发 APP）。 */
+  R2_SECRET_ACCESS_KEY?: string;
   /** 任务表 KV namespace。 */
   EDGE_RELAY_KV: KVNamespace;
   /** Vue 构建产物托管（wrangler.toml 的 [assets]）。 */

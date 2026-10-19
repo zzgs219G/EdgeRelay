@@ -21,6 +21,8 @@ import {
 } from "./ui";
 import { handleListJobs } from "./jobs";
 import { handleGetConfig, handlePatchConfig } from "./config_api";
+import { handlePresign } from "./r2_presign";
+import { handleStatusSteps } from "./status_steps";
 import { loadConfig, resolveEnv, type ResolvedEnv } from "./config";
 import { corsHeaders, error, json, timingSafeEqual, withCors } from "./http";
 
@@ -109,6 +111,18 @@ export default {
         case url.pathname === "/api/build" && request.method === "POST":
           return await handleBuild(request, cfg, ctx);
 
+        // 步骤明细必须排在 /api/status/ 前缀匹配之前，
+        // 否则会被当成 jobId="xxx/steps" 处理。
+        case url.pathname.startsWith("/api/status/") &&
+          url.pathname.endsWith("/steps") &&
+          request.method === "GET": {
+          const id = decodeURIComponent(
+            url.pathname.slice("/api/status/".length, -"/steps".length),
+          );
+          if (!id) return error(400, "bad_request", "缺少 jobId");
+          return await handleStatusSteps(cfg, id);
+        }
+
         case url.pathname === "/api/status/" && request.method === "GET":
           return error(400, "bad_request", "缺少 jobId");
 
@@ -117,6 +131,10 @@ export default {
           if (!jobId) return error(400, "bad_request", "缺少 jobId");
           return await handleStatus(cfg, jobId);
         }
+
+        // ── R2 预签名：APP 拿签名 URL 直传，密钥不出网关 ──
+        case url.pathname === "/api/r2/presign" && request.method === "POST":
+          return await handlePresign(request, cfg);
 
         // ── 运行时配置：面板 UI 直接改，不必回 Cloudflare 控制台 ──
         case url.pathname === "/api/config" && request.method === "GET":

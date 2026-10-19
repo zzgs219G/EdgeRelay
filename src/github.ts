@@ -371,6 +371,91 @@ export async function getRun(
   };
 }
 
+// ── 步骤明细 ─────────────────────────────────────────────────────────
+
+export interface StepInfo {
+  name: string;
+  status: string;
+  conclusion: string | null;
+  number: number;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface JobInfo {
+  id: number;
+  name: string;
+  status: string;
+  conclusion: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  steps: StepInfo[];
+}
+
+/**
+ * 拉取某个 run 的 job / step 级明细。
+ *
+ * 与 jian_box TaskViewModel.fetchJobsForRun 等价，只是搬进网关——
+ * 这条链路同样需要 Token 且暴露仓库路径。
+ */
+export async function getRunSteps(
+  env: Env,
+  runId: number,
+): Promise<{ run_started_at: string | null; updated_at: string; jobs: JobInfo[] }> {
+  // run 本体与 jobs 并行拉，省一个 RTT。
+  const [runResp, jobsResp] = await Promise.all([
+    ghFetch(env, `/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/runs/${runId}`),
+    ghFetch(
+      env,
+      `/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/runs/${runId}/jobs?per_page=20`,
+    ),
+  ]);
+
+  const run = (await runResp.json()) as GhRun;
+  const jobsData = (await jobsResp.json()) as {
+    jobs?: {
+      id: number;
+      name: string;
+      status: string;
+      conclusion: string | null;
+      started_at: string | null;
+      completed_at: string | null;
+      steps?: {
+        name: string;
+        status: string;
+        conclusion: string | null;
+        number: number;
+        started_at: string | null;
+        completed_at: string | null;
+      }[];
+    }[];
+  };
+
+  const jobs: JobInfo[] = (jobsData.jobs ?? []).map((j) => ({
+    id: j.id,
+    name: j.name || "未命名 Job",
+    status: j.status,
+    conclusion: j.conclusion ?? null,
+    started_at: j.started_at ?? null,
+    completed_at: j.completed_at ?? null,
+    // GitHub 偶尔不给 number，用索引兜底（与旧 APP 行为一致）
+    steps: (j.steps ?? []).map((s, idx) => ({
+      name: s.name || "未命名步骤",
+      status: s.status,
+      conclusion: s.conclusion ?? null,
+      number: s.number > 0 ? s.number : idx + 1,
+      started_at: s.started_at ?? null,
+      completed_at: s.completed_at ?? null,
+    })),
+  }));
+
+  return {
+    run_started_at: run.run_started_at,
+    updated_at: run.updated_at,
+    jobs,
+  };
+}
+
 // ── 产物下载链接 ─────────────────────────────────────────────────────
 
 interface GhAnnotation {

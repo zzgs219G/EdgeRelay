@@ -290,7 +290,9 @@ describe("EdgeRelay — build happy path", () => {
       env({ EDGE_RELAY_KV: fakeKv(store) }),
       {} as ExecutionContext,
     );
-    expect(resp.status).toBe(502);
+    // 200 而非 502：dispatch 失败是业务失败（参数/权限/仓库），不是网关
+    // 故障。用 5xx 会诱导客户端重试整条请求，放大问题。
+    expect(resp.status).toBe(200);
     const body = (await resp.json()) as { success: boolean; error: string };
     expect(body.success).toBe(false);
     expect(body.error).toContain("参数不匹配");

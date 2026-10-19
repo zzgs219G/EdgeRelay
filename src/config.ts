@@ -32,7 +32,13 @@ export interface RelayConfig {
   github_owner?: string;
   github_repo?: string;
   github_ref?: string;
+  /** R2 公开域（非敏感，公开可读） */
   r2_public_domain?: string;
+  /** R2 S3 端点，如 https://<account>.r2.cloudflarestorage.com */
+  r2_endpoint?: string;
+  r2_bucket_name?: string;
+  r2_access_key_id?: string;
+  r2_secret_access_key?: string;
   relay_token?: string;
   relay_password?: string;
   rate_limit_per_min?: number;
@@ -41,7 +47,15 @@ export interface RelayConfig {
 }
 
 /** 敏感字段清单：读接口一律遮蔽。 */
-export const SECRET_FIELDS = ["github_token", "relay_token", "relay_password"] as const;
+export const SECRET_FIELDS = [
+  "github_token",
+  "relay_token",
+  "relay_password",
+  // R2 的 S3 密钥：原本躺在公开可下载的配置 JSON 里，是本次改造要
+  // 收进网关的核心目标，必须按敏感字段处理（遮蔽 + 改需二次确认）。
+  "r2_access_key_id",
+  "r2_secret_access_key",
+] as const;
 export type SecretField = (typeof SECRET_FIELDS)[number];
 
 export function isSecretField(k: string): k is SecretField {
@@ -55,6 +69,10 @@ export const CONFIG_FIELDS = [
   "github_repo",
   "github_ref",
   "r2_public_domain",
+  "r2_endpoint",
+  "r2_bucket_name",
+  "r2_access_key_id",
+  "r2_secret_access_key",
   "relay_token",
   "relay_password",
   "rate_limit_per_min",
@@ -152,6 +170,10 @@ export async function resolveEnv(env: Env): Promise<ResolvedEnv> {
     GITHUB_REPO: cfg.github_repo || base.GITHUB_REPO,
     GITHUB_REF: cfg.github_ref || base.GITHUB_REF || "main",
     R2_PUBLIC_DOMAIN: cfg.r2_public_domain || base.R2_PUBLIC_DOMAIN,
+    R2_ENDPOINT: cfg.r2_endpoint || base.R2_ENDPOINT,
+    R2_BUCKET_NAME: cfg.r2_bucket_name || base.R2_BUCKET_NAME,
+    R2_ACCESS_KEY_ID: cfg.r2_access_key_id || base.R2_ACCESS_KEY_ID,
+    R2_SECRET_ACCESS_KEY: cfg.r2_secret_access_key || base.R2_SECRET_ACCESS_KEY,
     // 双通道：KV 值作为「当前生效值」，env 原值另存供兜底校验。
     RELAY_PASSWORD: cfg.relay_password || base.RELAY_PASSWORD,
     RELAY_TOKEN: cfg.relay_token || base.RELAY_TOKEN,
@@ -204,6 +226,10 @@ export async function describeConfig(
   secretOrPlain("github_repo", merged.GITHUB_REPO, Boolean(kvCfg.github_repo));
   secretOrPlain("github_ref", merged.GITHUB_REF, Boolean(kvCfg.github_ref));
   secretOrPlain("r2_public_domain", merged.R2_PUBLIC_DOMAIN, Boolean(kvCfg.r2_public_domain));
+  secretOrPlain("r2_endpoint", merged.R2_ENDPOINT, Boolean(kvCfg.r2_endpoint));
+  secretOrPlain("r2_bucket_name", merged.R2_BUCKET_NAME, Boolean(kvCfg.r2_bucket_name));
+  secretOrPlain("r2_access_key_id", merged.R2_ACCESS_KEY_ID, Boolean(kvCfg.r2_access_key_id));
+  secretOrPlain("r2_secret_access_key", merged.R2_SECRET_ACCESS_KEY, Boolean(kvCfg.r2_secret_access_key));
   secretOrPlain("relay_token", merged.RELAY_TOKEN, Boolean(kvCfg.relay_token));
   secretOrPlain("relay_password", merged.RELAY_PASSWORD, Boolean(kvCfg.relay_password));
 

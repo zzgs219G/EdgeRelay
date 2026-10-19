@@ -110,24 +110,41 @@
               <label class="block text-xs font-bold text-slate-500 mb-2">分支</label>
               <el-input v-model="form.github_ref" placeholder="main" />
             </div>
+          </div>
+        </section>
+
+        <!-- ── R2 存储 ───────────────────────────────────── -->
+        <section class="bg-white rounded-[20px] p-5 shadow-[0_4px_12px_rgba(0,0,0,0.03)]">
+          <div class="flex items-center mb-1">
+            <i class="ri-database-2-line text-slate-700 mr-2" />
+            <h2 class="font-bold text-slate-800 text-[15px]">R2 存储</h2>
+          </div>
+          <p class="text-[11px] text-gray-400 mb-4 leading-relaxed">
+            凭证只存网关：APP 上传前向网关要一个 10 分钟有效的预签名 URL，
+            拿它直传。即使 URL 泄漏也只能覆盖那一个文件，读不到已有内容。
+          </p>
+
+          <div class="space-y-4">
+            <div>
+              <label class="block text-xs font-bold text-slate-500 mb-2">S3 端点</label>
+              <el-input
+                v-model="form.r2_endpoint"
+                placeholder="https://<account>.r2.cloudflarestorage.com"
+              />
+            </div>
+            <div>
+              <label class="block text-xs font-bold text-slate-500 mb-2">存储桶名</label>
+              <el-input v-model="form.r2_bucket_name" placeholder="my-bucket" />
+            </div>
             <div>
               <label class="block text-xs font-bold text-slate-500 mb-2">
-                R2 公开域名 <span class="text-gray-400 font-normal">（可选，现阶段可不填）</span>
+                公开域名 <span class="text-gray-400 font-normal">（可选）</span>
               </label>
               <el-input v-model="form.r2_public_domain" placeholder="https://r2.example.com" />
-              <div class="text-[10px] text-gray-400 mt-1.5 leading-relaxed space-y-1">
-                <p>
-                  用途只有一个：流水线用
-                  <code class="font-mono bg-slate-100 px-1 rounded">::notice</code>
-                  喊出产物链接时，GitHub 会把域名打码成 <code class="font-mono">***</code>，
-                  网关用这个值把链接补全。
-                </p>
-                <p>
-                  <strong class="text-slate-500">不是</strong> APP 上传 APK 用的地址——
-                  上传走 APP 自己的 R2 配置。网关目前也不提供 R2 上传接口。
-                </p>
-                <p>留空时：产物链接只能退回 GitHub artifact（下载需要 GitHub 令牌）。</p>
-              </div>
+              <p class="text-[10px] text-gray-400 mt-1.5 leading-relaxed">
+                用于拼产物下载链接，也用于补全流水线注解里被打码的域名。
+                留空时产物只能退回 GitHub artifact（APP 已无令牌，下不了）。
+              </p>
             </div>
           </div>
         </section>
@@ -187,6 +204,8 @@ const secretMeta = reactive({
   github_token: null,
   relay_token: null,
   relay_password: null,
+  r2_access_key_id: null,
+  r2_secret_access_key: null,
 })
 
 const form = reactive({
@@ -195,6 +214,10 @@ const form = reactive({
   github_repo: '',
   github_ref: '',
   r2_public_domain: '',
+  r2_endpoint: '',
+  r2_bucket_name: '',
+  r2_access_key_id: '',
+  r2_secret_access_key: '',
   relay_token: '',
   relay_password: '',
   rate_limit_per_min: 120,
@@ -212,6 +235,20 @@ const secretFields = computed(() => [
     set: secretMeta.github_token?.set === true,
     masked: secretMeta.github_token?.masked || '',
     hint: '需要 apk-protect-action 的 Actions: Read & Write 权限',
+  },
+  {
+    key: 'r2_access_key_id',
+    label: 'R2 Access Key ID',
+    set: secretMeta.r2_access_key_id?.set === true,
+    masked: secretMeta.r2_access_key_id?.masked || '',
+    hint: '原本随公开配置 JSON 下发，等于泄漏；现已收进网关。APP 只拿预签名 URL',
+  },
+  {
+    key: 'r2_secret_access_key',
+    label: 'R2 Secret Access Key',
+    set: secretMeta.r2_secret_access_key?.set === true,
+    masked: secretMeta.r2_secret_access_key?.masked || '',
+    hint: '最敏感的一项。改动后旧值立即失效，正在上传的任务需重试',
   },
   {
     key: 'relay_token',
@@ -251,13 +288,17 @@ const dirty = computed(() => {
     form.github_repo !== baseline.github_repo ||
     form.github_ref !== baseline.github_ref ||
     form.r2_public_domain !== baseline.r2_public_domain ||
+    form.r2_endpoint !== baseline.r2_endpoint ||
+    form.r2_bucket_name !== baseline.r2_bucket_name ||
     Number(form.rate_limit_per_min) !== Number(baseline.rate_limit_per_min) ||
     Number(form.job_retention_days) !== Number(baseline.job_retention_days) ||
     Number(form.run_id_wait_ms) !== Number(baseline.run_id_wait_ms) ||
     // 敏感字段只要填了就 dirty
     Boolean(form.github_token) ||
     Boolean(form.relay_token) ||
-    Boolean(form.relay_password)
+    Boolean(form.relay_password) ||
+    Boolean(form.r2_access_key_id) ||
+    Boolean(form.r2_secret_access_key)
   )
 })
 
@@ -266,6 +307,8 @@ function applyConfig(data) {
   form.github_repo = data.config.github_repo ?? ''
   form.github_ref = data.config.github_ref ?? ''
   form.r2_public_domain = data.config.r2_public_domain ?? ''
+  form.r2_endpoint = data.config.r2_endpoint ?? ''
+  form.r2_bucket_name = data.config.r2_bucket_name ?? ''
   form.rate_limit_per_min = data.config.rate_limit_per_min ?? 120
   form.job_retention_days = data.config.job_retention_days ?? 7
   form.run_id_wait_ms = data.config.run_id_wait_ms ?? 4000
@@ -273,6 +316,14 @@ function applyConfig(data) {
   secretMeta.github_token = {
     set: data.config.github_token_set === true,
     masked: data.config.github_token_masked || '',
+  }
+  secretMeta.r2_access_key_id = {
+    set: data.config.r2_access_key_id_set === true,
+    masked: data.config.r2_access_key_id_masked || '',
+  }
+  secretMeta.r2_secret_access_key = {
+    set: data.config.r2_secret_access_key_set === true,
+    masked: data.config.r2_secret_access_key_masked || '',
   }
   secretMeta.relay_token = {
     set: data.config.relay_token_set === true,
@@ -289,6 +340,8 @@ function applyConfig(data) {
     github_repo: form.github_repo,
     github_ref: form.github_ref,
     r2_public_domain: form.r2_public_domain,
+    r2_endpoint: form.r2_endpoint,
+    r2_bucket_name: form.r2_bucket_name,
     rate_limit_per_min: form.rate_limit_per_min,
     job_retention_days: form.job_retention_days,
     run_id_wait_ms: form.run_id_wait_ms,
@@ -327,6 +380,8 @@ async function onSave() {
     if (form.github_repo !== baseline.github_repo) values.github_repo = form.github_repo
     if (form.github_ref !== baseline.github_ref) values.github_ref = form.github_ref
     if (form.r2_public_domain !== baseline.r2_public_domain) values.r2_public_domain = form.r2_public_domain
+    if (form.r2_endpoint !== baseline.r2_endpoint) values.r2_endpoint = form.r2_endpoint
+    if (form.r2_bucket_name !== baseline.r2_bucket_name) values.r2_bucket_name = form.r2_bucket_name
     // 数值字段：清空输入框时 v-model.number 给的是空串，而 Number("") === 0。
     // 直接把 0 提交上去会踩到语义陷阱——rate_limit_per_min 的 0 表示
     // 「关闭限流」，用户想"恢复默认"却把手刹拔了。
@@ -345,6 +400,8 @@ async function onSave() {
     if (form.github_token) values.github_token = form.github_token
     if (form.relay_token) values.relay_token = form.relay_token
     if (form.relay_password) values.relay_password = form.relay_password
+    if (form.r2_access_key_id) values.r2_access_key_id = form.r2_access_key_id
+    if (form.r2_secret_access_key) values.r2_secret_access_key = form.r2_secret_access_key
 
     if (Object.keys(values).length === 0) {
       ElMessage.info('没有改动')
@@ -359,6 +416,8 @@ async function onSave() {
     form.github_token = ''
     form.relay_token = ''
     form.relay_password = ''
+    form.r2_access_key_id = ''
+    form.r2_secret_access_key = ''
     currentPassword.value = ''
     ElMessage.success('已保存并生效')
 
