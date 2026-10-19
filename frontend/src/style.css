@@ -1,139 +1,23 @@
-/**
- * 设计令牌 + 全局基底。
+/* woff2-only 的 RemixIcon 样式，由 scripts/patch-remixicon.mjs 生成 */
+@import "./generated/remixicon.css";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * 设计语言对齐 vue-faka：
+ *   浅色主题（#f8fafc 底 / 白卡片）、大圆角（16-20px）、极柔阴影、
+ *   蓝色主色、RemixIcon 图标、Tailwind 原子类。
  *
- * 移动优先：以 390px（iPhone 基准）为起点写样式，再用 min-width 向大屏
- * 扩展。反过来写（PC 优先 + max-width 降级）永远得不到好的移动端体验。
- *
- * 暗色用 Element Plus 的官方 CSS 变量体系（--el-*）一次性覆盖，
- * 不在组件里用 :deep() 逐个打补丁——那是旧写法的标志。
+ * 移动优先：以手机视口为基准排布，sm/md/lg 是渐进增强。
  */
 
-:root {
-  color-scheme: dark;
-
-  /* ── 品牌色阶 ─────────────────────────────────────────── */
-  --er-primary: #4f8cff;
-  --er-primary-press: #3d78e0;
-  --er-primary-soft: rgba(79, 140, 255, 0.12);
-
-  /* ── 语义色 ───────────────────────────────────────────── */
-  --er-ok: #3fb950;
-  --er-warn: #d29922;
-  --er-err: #f85149;
-
-  /* ── 中性阶（深 → 浅）─────────────────────────────────── */
-  --er-bg: #0b0e14;
-  --er-surface: #141922;
-  --er-surface-2: #1a2029;
-  --er-border: #232a36;
-  --er-text: #e6e9ef;
-  --er-text-2: #a8b1c2;
-  --er-text-3: #6b7688;
-
-  /* ── 圆角与间距 ───────────────────────────────────────── */
-  --er-r-sm: 8px;
-  --er-r-md: 12px;
-  --er-r-lg: 16px;
-  --er-r-full: 999px;
-
-  /* 安全区：刘海屏 / 底部横条 */
-  --er-safe-t: env(safe-area-inset-top, 0px);
-  --er-safe-b: env(safe-area-inset-bottom, 0px);
-
-  /* 触控目标最小尺寸（Apple HIG 44pt / Material 48dp） */
-  --er-tap: 44px;
-}
-
-/* ── Element Plus 主题对齐 ────────────────────────────────────────
- * 一次性把 EP 的设计变量接到我们的令牌上，之后组件里不必再用 :deep()
- * 去覆盖 background/box-shadow。优先级高于 EP 默认 CSS。 */
-:root {
-  --el-color-primary: var(--er-primary);
-  --el-color-primary-light-3: #6ea1ff;
-  --el-color-primary-light-5: #8ab5ff;
-  --el-color-primary-light-7: #a9c9ff;
-  --el-color-primary-light-8: #bcd5ff;
-  --el-color-primary-light-9: #d6e5ff;
-  --el-color-primary-dark-2: var(--er-primary-press);
-
-  --el-bg-color: var(--er-surface);
-  --el-bg-color-overlay: var(--er-surface-2);
-  --el-bg-color-page: var(--er-bg);
-
-  --el-text-color-primary: var(--er-text);
-  --el-text-color-regular: var(--er-text-2);
-  --el-text-color-secondary: var(--er-text-3);
-  --el-text-color-placeholder: var(--er-text-3);
-
-  --el-border-color: var(--er-border);
-  --el-border-color-light: var(--er-border);
-  --el-border-color-lighter: var(--er-border);
-  --el-border-color-extra-light: var(--er-border);
-
-  --el-fill-color: var(--er-surface-2);
-  --el-fill-color-light: var(--er-surface-2);
-  --el-fill-color-lighter: var(--er-surface-2);
-  --el-fill-color-blank: transparent;
-
-  --el-border-radius-base: var(--er-r-sm);
-  --el-border-radius-small: 6px;
-
-  --el-font-size-base: 15px;
-  --el-font-size-small: 13px;
-}
-
-/* EP 的输入控件在暗色下默认是白底，用变量接过来 */
-.el-input__wrapper,
-.el-textarea__inner,
-.el-select__wrapper {
-  background-color: var(--er-bg) !important;
-  box-shadow: 0 0 0 1px var(--er-border) !important;
-  border-radius: var(--er-r-sm);
-}
-.el-input__wrapper.is-focus,
-.el-textarea__inner:focus,
-.el-select__wrapper.is-focused {
-  box-shadow: 0 0 0 1px var(--er-primary) !important;
-}
-
-/* 表格暗色 */
-.el-table {
-  --el-table-bg-color: transparent;
-  --el-table-tr-bg-color: transparent;
-  --el-table-header-bg-color: var(--er-surface-2);
-  --el-table-header-text-color: var(--er-text-3);
-  --el-table-row-hover-bg-color: var(--er-surface-2);
-  --el-table-border-color: var(--er-border);
-  --el-table-text-color: var(--er-text-2);
-  background-color: transparent;
-}
-.el-table th.el-table__cell {
-  font-weight: 500;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-/* 消息提示 */
-.el-message {
-  background: var(--er-surface-2);
-  border: 1px solid var(--er-border);
-  border-radius: var(--er-r-md);
-}
-
-/* ── 全局基底 ──────────────────────────────────────────────────── */
-
-html,
-body,
-#app {
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
+  background-color: #f8fafc;
+  color: #334155;
   margin: 0;
-  min-height: 100vh;
-  background: var(--er-bg);
-  color: var(--er-text);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC',
-    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-  -webkit-font-smoothing: antialiased;
-  /* 禁止 iOS 双击缩放 / 长按选中，像原生 App 一样 */
   -webkit-tap-highlight-color: transparent;
   -webkit-touch-callout: none;
 }
@@ -142,7 +26,7 @@ body,
   box-sizing: border-box;
 }
 
-/* iOS Safari 的 input 会继承 body 字体导致 zoom-in，强制 16px */
+/* iOS Safari 里 input font-size < 16px 会聚焦自动放大页面 */
 input,
 textarea,
 select {
@@ -150,27 +34,122 @@ select {
   font-family: inherit;
 }
 
-a {
-  color: var(--er-primary);
-  text-decoration: none;
-  -webkit-tap-highlight-color: transparent;
+/* ── Element Plus 移动端适配（照 vue-faka 的做法）───────────────── */
+
+/* 卡片去边框、加极柔阴影、大圆角 */
+.el-card {
+  border-radius: 16px !important;
+  border: none !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03) !important;
+  overflow: hidden;
 }
 
-/* 触控目标至少 44px，别让拇指戳不中 */
-button,
-[role='button'] {
-  min-height: var(--er-tap);
+/* 弹窗：手机上也别顶满屏 */
+.el-message-box {
+  width: 85% !important;
+  max-width: 340px;
+  border-radius: 16px !important;
+}
+.el-dialog {
+  width: 90% !important;
+  max-width: 420px;
+  border-radius: 20px !important;
+}
+.el-drawer {
+  border-top-left-radius: 24px;
+  border-top-right-radius: 24px;
 }
 
-/* 滚动条（桌面端才明显） */
-::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+/* 控件圆角统一，去掉 EP 默认的方角 */
+.el-button {
+  border-radius: 10px;
 }
-::-webkit-scrollbar-thumb {
-  background: var(--er-border);
-  border-radius: var(--er-r-full);
+.el-input__wrapper {
+  border-radius: 10px !important;
+  box-shadow: 0 0 0 1px #ebeef5 inset !important;
+  background-color: #fff;
 }
-::-webkit-scrollbar-track {
-  background: transparent;
+.el-input__wrapper.is-focus {
+  box-shadow: 0 0 0 1px #3b82f6 inset !important;
+}
+.el-textarea__inner {
+  border-radius: 10px !important;
+  box-shadow: 0 0 0 1px #ebeef5 inset !important;
+  background-color: #fff;
+}
+.el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px #3b82f6 inset !important;
+}
+.el-select__wrapper {
+  border-radius: 10px !important;
+  box-shadow: 0 0 0 1px #ebeef5 inset !important;
+  background-color: #fff;
+}
+
+/* 主色对齐 Tailwind 的 blue-500 */
+.el-button--primary {
+  --el-button-bg-color: #3b82f6;
+  --el-button-border-color: #3b82f6;
+  --el-button-hover-bg-color: #2563eb;
+  --el-button-hover-border-color: #2563eb;
+  --el-button-active-bg-color: #1d4ed8;
+}
+
+/* 消息提示 */
+.el-message {
+  border-radius: 12px !important;
+  border: none !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1) !important;
+}
+
+/* ── 动画（照 vue-faka）────────────────────────────────────────── */
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in { animation: fadeIn 0.3s ease-out; }
+
+@keyframes pulseDot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.85); }
+}
+.animate-dot { animation: pulseDot 1.4s ease-in-out infinite; }
+
+/* ── 玻璃拟态：吸顶栏 / 底栏 ───────────────────────────────────── */
+
+.glass-header {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.glass-tabbar {
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(15px);
+  -webkit-backdrop-filter: blur(15px);
+  border-top: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+/* ── 工具类 ─────────────────────────────────────────────────────── */
+
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* 单行截断 */
+.truncate-1 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 全局 loading 遮罩 */
+.global-loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(248, 250, 252, 0.8);
+  backdrop-filter: blur(8px);
 }

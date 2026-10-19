@@ -3,10 +3,18 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <!-- 移动端浏览器地址栏跟随页面背景，避免白色闪烁 -->
+  <meta name="theme-color" content="#f8fafc">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <title>EdgeRelay · 构建网关</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-  <script type="module" crossorigin src="./assets/index-DDnC5TDa.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-BhsBYxm-.css">
+  <style>
+    /* 首屏底色，避免 JS 加载前的白闪 */
+    html, body { margin: 0; background: #f8fafc; }
+  </style>
+  <script type="module" crossorigin src="./assets/index-B6s6LMzi.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-DxpQzwe9.css">
 </head>
 <body>
   <div id="app"></div>

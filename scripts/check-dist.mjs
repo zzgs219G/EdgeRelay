@@ -5,7 +5,10 @@
  * 不一致说明有人改了源码但没重新 build——此时若直接把 dist 提交进 git，
  * 会静默部署旧前端，所以必须显式失败。
  *
- * 用法：node .local-docs/check-dist.mjs
+ * 走正式的 npm run build 而不是裸 vite build：后者会跳过
+ * scripts/patch-remixicon.mjs，生成的 CSS 与 dist 里的不一致，误报。
+ *
+ * 用法：node scripts/check-dist.mjs
  */
 import { execSync } from "node:child_process";
 import { existsSync, rmSync, readdirSync, statSync, readFileSync } from "node:fs";
@@ -22,8 +25,8 @@ if (!existsSync(DIST)) {
 rmSync(TMP, { recursive: true, force: true });
 
 // 用一个独立 outDir 重新构建，避免污染真实 dist。
-const pkg = JSON.parse(readFileSync("frontend/package.json", "utf8"));
-execSync("npx vite build --outDir .dist-check --emptyOutDir", {
+// --outDir 覆盖 dist，--emptyOutDir 允许清空它。
+execSync("npm run build -- --outDir .dist-check --emptyOutDir", {
   cwd: "frontend",
   stdio: "inherit",
 });
