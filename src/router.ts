@@ -41,14 +41,25 @@ export default {
       return handleLogout();
     }
 
-    // 根路径：未登录给登录页，已登录放行给 SPA（assets 托管）。
-    // 这是"打开网页不该报 RELAY_TOKEN 未配置"的关键——页面本身与
+    // 根路径与 SPA 路由：未登录给登录页，已登录放行给 assets。
+    //
+    // 为什么把 /dashboard 和所有未匹配 GET 一起放行：assets 配了
+    // not_found_handling = "single-page-application"，未命中静态文件的
+    // 路径本该由它回 index.html 交给 vue-router。但 run_worker_first = true
+    // 让这些请求全都先经过 Worker——Worker 一旦在这里返回 JSON 404，
+    // assets 的 SPA 兜底就永远没机会跑。所以只在自己确实该拦的路径上拦。
+    //
+    // 这也是"打开网页不该报 RELAY_TOKEN 未配置"的关键——页面本身与
     // 后端 secret 无关，secret 缺失只在调 /api/* 时才暴露。
-    if (url.pathname === "/" && request.method === "GET") {
-      if (await hasValidSession(request, env)) {
-        return env.ASSETS ? env.ASSETS.fetch(request) : htmlResponse(renderLoginPage());
+    if (request.method === "GET" && !url.pathname.startsWith("/api/")) {
+      if (url.pathname === "/" && !(await hasValidSession(request, env))) {
+        return htmlResponse(renderLoginPage());
       }
-      return htmlResponse(renderLoginPage());
+      if (env.ASSETS) return env.ASSETS.fetch(request);
+      // ASSETS 未绑定（本地 dev 或配错了）：至少给个能看的页面。
+      return url.pathname === "/"
+        ? htmlResponse(renderLoginPage())
+        : htmlResponse(renderLoginPage(`路径 ${url.pathname} 不存在`), 404);
     }
 
     // 鉴权 —— 只拦 /api/。
@@ -83,7 +94,15 @@ export default {
         }
 
         default:
-          return error(404, "not_found", `未知路径 ${request.method} ${url.pathname}`);
+          // 只有 /api/* 会走到这里（其它 GET 已在上面交给 assets）。
+          // 非 /api/ 的未匹配路径不返回 JSON 404——那会骗过 SPA 兜底，
+          // 让浏览器看到一串 JSON 而不是页面。
+          if (url.pathname.startsWith("/api/")) {
+            return error(404, "not_found", `未知路径 ${request.method} ${url.pathname}`);
+          }
+          return env.ASSETS
+            ? env.ASSETS.fetch(request)
+            : error(404, "not_found", `未知路径 ${request.method} ${url.pathname}`);
       }
     } catch (err) {
       console.error("unhandled route error", {

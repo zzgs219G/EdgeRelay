@@ -248,6 +248,104 @@ describe("POST /logout", () => {
   });
 });
 
+// ── SPA 路由与静态资源必须交给 assets ──────────────────────────────
+
+describe("SPA routes fall through to assets", () => {
+  function assetsSpy(): { fetcher: Fetcher; seen: string[] } {
+    const seen: string[] = [];
+    const fetcher = {
+      fetch: async (r: Request) => {
+        const p = new URL(r.url).pathname;
+        seen.push(p);
+        return new Response(`asset:${p}`, { headers: { "content-type": "text/plain" } });
+      },
+    } as unknown as Fetcher;
+    return { fetcher, seen };
+  }
+
+  it("serves /dashboard from assets instead of 404 JSON", async () => {
+    // 线上事故：登录成功 303 到 /dashboard，Worker 没有该路由，
+    // default 分支返回 {"success":false,"error":"未知路径 GET /dashboard"}
+    const { fetcher, seen } = assetsSpy();
+    const resp = await worker.fetch(
+      req("/dashboard"),
+      env({ ASSETS: fetcher }),
+      {} as ExecutionContext,
+    );
+    expect(resp.status).toBe(200);
+    expect(await resp.text()).toBe("asset:/dashboard");
+    expect(seen).toEqual(["/dashboard"]);
+  });
+
+  it("serves built JS/CSS from assets", async () => {
+    // run_worker_first = true 让这些请求也先过 Worker；Worker 必须放行，
+    // 否则 assets 的 SPA 兜底永不生效，页面是一片 JSON 404。
+    const { fetcher, seen } = assetsSpy();
+    for (const p of ["/assets/index-abc123.js", "/assets/index-abc123.css", "/favicon.svg"]) {
+      const resp = await worker.fetch(
+        req(p),
+        env({ ASSETS: fetcher }),
+        {} as ExecutionContext,
+      );
+      expect(resp.status).toBe(200);
+      expect(await resp.text()).toBe(`asset:${p}`);
+    }
+    expect(seen).toEqual([
+      "/assets/index-abc123.js",
+      "/assets/index-abc123.css",
+      "/favicon.svg",
+    ]);
+  });
+
+  it("serves deep SPA routes from assets", async () => {
+    const { fetcher, seen } = assetsSpy();
+    const resp = await worker.fetch(
+      req("/some/deep/route"),
+      env({ ASSETS: fetcher }),
+      {} as ExecutionContext,
+    );
+    expect(resp.status).toBe(200);
+    expect(seen).toEqual(["/some/deep/route"]);
+  });
+
+  it("still 404s JSON for unknown /api/ paths", async () => {
+    const resp = await worker.fetch(
+      req("/api/definitely-not-a-route", {}, { authorization: "Bearer test-relay-token" }),
+      env({ ASSETS: assetsSpy().fetcher }),
+      {} as ExecutionContext,
+    );
+    expect(resp.status).toBe(404);
+    expect((await resp.json() as { code: string }).code).toBe("not_found");
+  });
+
+  it("serves / from assets when logged in", async () => {
+    const cookie = await buildSessionCookie(env(), 3600);
+    const { fetcher, seen } = assetsSpy();
+    const resp = await worker.fetch(
+      req("/", {}, { cookie: `${SESSION_COOKIE_NAME}=${cookie}` }),
+      env({ ASSETS: fetcher }),
+      {} as ExecutionContext,
+    );
+    expect(resp.status).toBe(200);
+    expect(await resp.text()).toBe("asset:/");
+    expect(seen).toEqual(["/"]);
+  });
+
+  it("gives the login page at / when not logged in, even with ASSETS bound", async () => {
+    const { fetcher, seen } = assetsSpy();
+    const resp = await worker.fetch(
+      req("/"),
+      env({ ASSETS: fetcher }),
+      {} as ExecutionContext,
+    );
+    expect(resp.status).toBe(200);
+    expect(resp.headers.get("content-type")).toContain("text/html");
+    expect(await resp.text()).toContain("EdgeRelay");
+    // 未登录不该把 SPA 吐出去
+    expect(seen).toEqual([]);
+  });
+});
+
 // ── /api/* 双通道鉴权 ───────────────────────────────────────────────
 
 describe("/api/* accepts cookie or Bearer", () => {
