@@ -50,10 +50,11 @@ select {
   max-width: 340px;
   border-radius: 16px !important;
 }
+/* 弹窗宽度交给使用方通过 width 属性决定；这里只管圆角与移动端上限。
+ * 之前用 width:90%!important 会压掉 :width="520px" 这类显式设置。 */
 .el-dialog {
-  width: 90% !important;
-  max-width: 420px;
   border-radius: 20px !important;
+  max-width: 92vw;
 }
 .el-drawer {
   border-top-left-radius: 24px;
@@ -119,6 +120,15 @@ select {
   50% { opacity: 0.35; transform: scale(0.85); }
 }
 .animate-dot { animation: pulseDot 1.4s ease-in-out infinite; }
+
+/* ── 玻璃拟态 token（参考 CloudFlare-ImgBed 的渠道卡片）─────────── */
+:root {
+  --glass-bg: rgba(255, 255, 255, 0.72);
+  --glass-border: rgba(148, 163, 184, 0.18);
+  --glass-shadow: 0 4px 24px -8px rgba(15, 23, 42, 0.1);
+  --glass-header-bg: rgba(248, 250, 252, 0.72);
+  --glass-header-border: rgba(148, 163, 184, 0.14);
+}
 
 /* ── 玻璃拟态：吸顶栏 / 底栏 ───────────────────────────────────── */
 

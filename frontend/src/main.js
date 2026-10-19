@@ -4,7 +4,7 @@ import { createPinia } from 'pinia'
 // 按需引入 EP 组件，不做全量注册。
 // 图标统一用 RemixIcon（CSS 类名，无 JS 体积），因此不再需要
 // @element-plus/icons-vue。
-import { ElButton, ElInput, ElOption, ElSelect } from 'element-plus'
+import { ElButton, ElDialog, ElInput, ElOption, ElSelect } from 'element-plus'
 
 import './style.css'
 import App from './App.vue'
@@ -22,6 +22,10 @@ import 'element-plus/theme-chalk/el-button.css'
 import 'element-plus/theme-chalk/el-input.css'
 import 'element-plus/theme-chalk/el-select.css'
 import 'element-plus/theme-chalk/el-message.css'
+// el-dialog：配置页的编辑弹窗。漏引会让弹窗失去遮罩与定位，
+// 直接展开在文档流里——和之前漏 el-message 是同一类坑。
+import 'element-plus/theme-chalk/el-dialog.css'
+import 'element-plus/theme-chalk/el-overlay.css'
 
 const app = createApp(App)
 
@@ -29,6 +33,7 @@ app.use(createPinia())
 app.use(router)
 
 app.component('ElButton', ElButton)
+app.component('ElDialog', ElDialog)
 app.component('ElInput', ElInput)
 app.component('ElOption', ElOption)
 app.component('ElSelect', ElSelect)
