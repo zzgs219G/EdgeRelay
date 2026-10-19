@@ -1,53 +1,71 @@
 <template>
-  <div class="login-page">
-    <div class="login-card">
-      <div class="brand">
-        <div class="logo">
-          <el-icon :size="32"><Lock /></el-icon>
+  <div class="login">
+    <!-- 背景光斑：给暗色页面一点层次，纯 CSS 无图片 -->
+    <div class="glow" aria-hidden="true" />
+
+    <main class="panel">
+      <header class="brand">
+        <div class="mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2 4 6v6c0 5 3.4 8.5 8 10 4.6-1.5 8-5 8-10V6l-8-4z" />
+            <path d="m9 12 2 2 4-4" />
+          </svg>
         </div>
         <h1>EdgeRelay</h1>
-        <p>APK 构建网关 · 管理控制台</p>
-      </div>
+        <p class="tagline">APK 构建网关</p>
+      </header>
 
-      <el-input
-        v-model="password"
-        type="password"
-        placeholder="请输入管理密码"
-        size="large"
-        show-password
-        :disabled="auth.checking"
-        @keyup.enter="onLogin"
-      >
-        <template #prefix><el-icon><Key /></el-icon></template>
-      </el-input>
+      <form class="form" @submit.prevent="onLogin">
+        <label class="field">
+          <span class="field-label">管理密码</span>
+          <el-input
+            v-model="password"
+            type="password"
+            placeholder="请输入密码"
+            size="large"
+            show-password
+            :disabled="auth.checking"
+            autocomplete="current-password"
+            @keyup.enter="onLogin"
+          />
+        </label>
 
-      <el-button
-        type="primary"
-        size="large"
-        class="submit"
-        :loading="submitting"
-        :disabled="auth.checking"
-        @click="onLogin"
-      >
-        进入控制台
-      </el-button>
+        <el-button
+          type="primary"
+          size="large"
+          native-type="submit"
+          class="submit"
+          :loading="submitting"
+          :disabled="auth.checking"
+        >
+          进入控制台
+        </el-button>
+      </form>
 
-      <!-- 后端配置问题直接显示在登录页：缺 secret 时来这里就能看到，
+      <!-- 后端配置问题直接摊在登录页：缺 secret 来这里就能看到，
            而不是登进去才发现所有接口都坏。 -->
-      <div v-if="auth.health && !auth.health.ok" class="backend-warn">
-        <el-icon><WarningFilled /></el-icon>
-        <span>后端未就绪</span>
+      <div v-if="auth.health && !auth.health.ok" class="notice notice-warn">
+        <div class="notice-head">
+          <el-icon><WarningFilled /></el-icon>
+          <strong>后端未就绪</strong>
+        </div>
         <ul>
           <li v-for="p in auth.health.problems" :key="p">{{ p }}</li>
         </ul>
       </div>
-    </div>
+    </main>
+
+    <footer class="foot">
+      密码由 <code>RELAY_PASSWORD</code> 提供
+    </footer>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { WarningFilled } from '@element-plus/icons-vue'
 import { useAuthStore } from '../stores'
 
 const router = useRouter()
@@ -61,6 +79,7 @@ onMounted(async () => {
 })
 
 async function onLogin() {
+  if (submitting.value) return
   submitting.value = true
   try {
     const ok = await auth.login(password.value)
@@ -72,70 +91,124 @@ async function onLogin() {
 </script>
 
 <style scoped>
-.login-page {
-  min-height: 100vh;
+.login {
+  position: relative;
+  min-height: 100dvh; /* dvh 避开 iOS 工具栏的高度跳动 */
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  background: #0b0e14;
-  padding: 24px;
+  padding: calc(24px + var(--er-safe-t)) 20px calc(24px + var(--er-safe-b));
+  overflow: hidden;
 }
-.login-card {
+
+/* 顶部一团 Primary 色光晕 + 底部一团，制造深度 */
+.glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(60% 40% at 50% -8%, rgba(79, 140, 255, 0.22), transparent 70%),
+    radial-gradient(50% 30% at 50% 108%, rgba(79, 140, 255, 0.08), transparent 70%);
+}
+
+.panel {
+  position: relative;
   width: 100%;
-  max-width: 360px;
-  background: #141922;
-  border: 1px solid #232a36;
-  border-radius: 16px;
-  padding: 32px 28px;
+  max-width: 380px;
 }
+
+/* ── 品牌区 ─────────────────────────────────────────────────────── */
 .brand {
   text-align: center;
-  margin-bottom: 28px;
+  margin-bottom: 32px;
 }
-.logo {
-  width: 56px;
-  height: 56px;
-  border-radius: 16px;
-  background: rgba(79, 140, 255, 0.12);
-  color: #4f8cff;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  margin-bottom: 14px;
+.mark {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 18px;
+  border-radius: 20px;
+  display: grid;
+  place-items: center;
+  color: var(--er-primary);
+  background: linear-gradient(160deg, rgba(79, 140, 255, 0.22), rgba(79, 140, 255, 0.06));
+  border: 1px solid rgba(79, 140, 255, 0.28);
+  box-shadow: 0 12px 32px -12px rgba(79, 140, 255, 0.5);
 }
-h1 {
-  font-size: 22px;
+.mark svg {
+  width: 30px;
+  height: 30px;
+}
+.brand h1 {
   margin: 0;
-  color: #e6e9ef;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
-.brand p {
-  color: #8b94a7;
-  font-size: 13px;
+.tagline {
   margin: 6px 0 0;
+  font-size: 14px;
+  color: var(--er-text-3);
+}
+
+/* ── 表单 ───────────────────────────────────────────────────────── */
+.field {
+  display: block;
+}
+.field-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--er-text-2);
+  margin-bottom: 8px;
+  padding-left: 2px;
 }
 .submit {
   width: 100%;
-  margin-top: 16px;
-  height: 44px;
-  font-weight: 600;
-}
-.backend-warn {
   margin-top: 20px;
-  padding: 12px 14px;
-  background: rgba(210, 153, 34, 0.1);
-  border: 1px solid rgba(210, 153, 34, 0.3);
-  border-radius: 8px;
-  color: #d29922;
-  font-size: 12px;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
+  height: 48px;
+  font-size: 15px;
+  font-weight: 600;
+  border-radius: var(--er-r-md);
 }
-.backend-warn ul {
-  flex-basis: 100%;
-  margin: 4px 0 0;
-  padding-left: 18px;
-  color: #8b94a7;
+
+/* ── 告警条 ─────────────────────────────────────────────────────── */
+.notice {
+  margin-top: 20px;
+  padding: 14px 16px;
+  border-radius: var(--er-r-md);
+  font-size: 13px;
+}
+.notice-warn {
+  background: rgba(210, 153, 34, 0.09);
+  border: 1px solid rgba(210, 153, 34, 0.26);
+  color: var(--er-warn);
+}
+.notice-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+.notice ul {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--er-text-2);
+  line-height: 1.7;
+}
+
+.foot {
+  position: relative;
+  margin-top: 28px;
+  font-size: 12px;
+  color: var(--er-text-3);
+}
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--er-surface-2);
+  font-size: 11px;
 }
 </style>

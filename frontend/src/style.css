@@ -1,34 +1,176 @@
-/* 全局暗色基底。组件级样式见各 .vue 的 <style scoped>。 */
+/**
+ * 设计令牌 + 全局基底。
+ *
+ * 移动优先：以 390px（iPhone 基准）为起点写样式，再用 min-width 向大屏
+ * 扩展。反过来写（PC 优先 + max-width 降级）永远得不到好的移动端体验。
+ *
+ * 暗色用 Element Plus 的官方 CSS 变量体系（--el-*）一次性覆盖，
+ * 不在组件里用 :deep() 逐个打补丁——那是旧写法的标志。
+ */
+
 :root {
   color-scheme: dark;
+
+  /* ── 品牌色阶 ─────────────────────────────────────────── */
+  --er-primary: #4f8cff;
+  --er-primary-press: #3d78e0;
+  --er-primary-soft: rgba(79, 140, 255, 0.12);
+
+  /* ── 语义色 ───────────────────────────────────────────── */
+  --er-ok: #3fb950;
+  --er-warn: #d29922;
+  --er-err: #f85149;
+
+  /* ── 中性阶（深 → 浅）─────────────────────────────────── */
+  --er-bg: #0b0e14;
+  --er-surface: #141922;
+  --er-surface-2: #1a2029;
+  --er-border: #232a36;
+  --er-text: #e6e9ef;
+  --er-text-2: #a8b1c2;
+  --er-text-3: #6b7688;
+
+  /* ── 圆角与间距 ───────────────────────────────────────── */
+  --er-r-sm: 8px;
+  --er-r-md: 12px;
+  --er-r-lg: 16px;
+  --er-r-full: 999px;
+
+  /* 安全区：刘海屏 / 底部横条 */
+  --er-safe-t: env(safe-area-inset-top, 0px);
+  --er-safe-b: env(safe-area-inset-bottom, 0px);
+
+  /* 触控目标最小尺寸（Apple HIG 44pt / Material 48dp） */
+  --er-tap: 44px;
 }
+
+/* ── Element Plus 主题对齐 ────────────────────────────────────────
+ * 一次性把 EP 的设计变量接到我们的令牌上，之后组件里不必再用 :deep()
+ * 去覆盖 background/box-shadow。优先级高于 EP 默认 CSS。 */
+:root {
+  --el-color-primary: var(--er-primary);
+  --el-color-primary-light-3: #6ea1ff;
+  --el-color-primary-light-5: #8ab5ff;
+  --el-color-primary-light-7: #a9c9ff;
+  --el-color-primary-light-8: #bcd5ff;
+  --el-color-primary-light-9: #d6e5ff;
+  --el-color-primary-dark-2: var(--er-primary-press);
+
+  --el-bg-color: var(--er-surface);
+  --el-bg-color-overlay: var(--er-surface-2);
+  --el-bg-color-page: var(--er-bg);
+
+  --el-text-color-primary: var(--er-text);
+  --el-text-color-regular: var(--er-text-2);
+  --el-text-color-secondary: var(--er-text-3);
+  --el-text-color-placeholder: var(--er-text-3);
+
+  --el-border-color: var(--er-border);
+  --el-border-color-light: var(--er-border);
+  --el-border-color-lighter: var(--er-border);
+  --el-border-color-extra-light: var(--er-border);
+
+  --el-fill-color: var(--er-surface-2);
+  --el-fill-color-light: var(--er-surface-2);
+  --el-fill-color-lighter: var(--er-surface-2);
+  --el-fill-color-blank: transparent;
+
+  --el-border-radius-base: var(--er-r-sm);
+  --el-border-radius-small: 6px;
+
+  --el-font-size-base: 15px;
+  --el-font-size-small: 13px;
+}
+
+/* EP 的输入控件在暗色下默认是白底，用变量接过来 */
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select__wrapper {
+  background-color: var(--er-bg) !important;
+  box-shadow: 0 0 0 1px var(--er-border) !important;
+  border-radius: var(--er-r-sm);
+}
+.el-input__wrapper.is-focus,
+.el-textarea__inner:focus,
+.el-select__wrapper.is-focused {
+  box-shadow: 0 0 0 1px var(--er-primary) !important;
+}
+
+/* 表格暗色 */
+.el-table {
+  --el-table-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-header-bg-color: var(--er-surface-2);
+  --el-table-header-text-color: var(--er-text-3);
+  --el-table-row-hover-bg-color: var(--er-surface-2);
+  --el-table-border-color: var(--er-border);
+  --el-table-text-color: var(--er-text-2);
+  background-color: transparent;
+}
+.el-table th.el-table__cell {
+  font-weight: 500;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* 消息提示 */
+.el-message {
+  background: var(--er-surface-2);
+  border: 1px solid var(--er-border);
+  border-radius: var(--er-r-md);
+}
+
+/* ── 全局基底 ──────────────────────────────────────────────────── */
 
 html,
 body,
 #app {
   margin: 0;
   min-height: 100vh;
-  background: #0b0e14;
-  color: #e6e9ef;
+  background: var(--er-bg);
+  color: var(--er-text);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC',
     'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
   -webkit-font-smoothing: antialiased;
+  /* 禁止 iOS 双击缩放 / 长按选中，像原生 App 一样 */
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
 }
 
 * {
   box-sizing: border-box;
 }
 
-a {
-  color: #4f8cff;
-  text-decoration: none;
-}
-a:hover {
-  text-decoration: underline;
+/* iOS Safari 的 input 会继承 body 字体导致 zoom-in，强制 16px */
+input,
+textarea,
+select {
+  font-size: 16px;
+  font-family: inherit;
 }
 
-/* Element Plus 消息提示暗色适配 */
-.el-message {
-  background: #1a2029;
-  border: 1px solid #232a36;
+a {
+  color: var(--er-primary);
+  text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 触控目标至少 44px，别让拇指戳不中 */
+button,
+[role='button'] {
+  min-height: var(--er-tap);
+}
+
+/* 滚动条（桌面端才明显） */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--er-border);
+  border-radius: var(--er-r-full);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
 }
