@@ -136,7 +136,7 @@ export interface Env {
   /** 触发分支，默认 main。 */
   GITHUB_REF?: string;
   /** 任务表 KV namespace。 */
-  BUILD_JOBS: KVNamespace;
+  EDGE_RELAY_KV: KVNamespace;
   /** 网关调用方令牌（APP 与后台面板共用同一值）。 */
   RELAY_TOKEN: string;
   /** 每分钟令牌桶容量，默认 120；"0" 关闭限流。 */

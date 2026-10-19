@@ -19,7 +19,7 @@ function env(overrides: Partial<Env> = {}): Env {
     GITHUB_OWNER: "zzgs219G",
     GITHUB_REPO: "apk-protect-action",
     GITHUB_REF: "main",
-    BUILD_JOBS: {} as KVNamespace,
+    EDGE_RELAY_KV: {} as KVNamespace,
     RELAY_TOKEN: "test-relay-token",
     RATE_LIMIT_PER_MIN: "0",
     RUN_ID_WAIT_MS: "1500",
@@ -190,7 +190,7 @@ describe("EdgeRelay — status of an unknown job", () => {
     stubGitHub(() => new Response("{}", { status: 200 }));
     const resp = await worker.fetch(
       authedReq("/api/status/does-not-exist"),
-      env({ BUILD_JOBS: fakeKv(store) }),
+      env({ EDGE_RELAY_KV: fakeKv(store) }),
       {} as ExecutionContext,
     );
     expect(resp.status).toBe(404);
@@ -228,7 +228,7 @@ describe("EdgeRelay — build happy path", () => {
 
     const resp = await worker.fetch(
       authedReq("/api/build", { method: "POST", body: JSON.stringify(VALID_BODY) }),
-      env({ BUILD_JOBS: fakeKv(store), RUN_ID_WAIT_MS: "2000" }),
+      env({ EDGE_RELAY_KV: fakeKv(store), RUN_ID_WAIT_MS: "2000" }),
       {} as ExecutionContext,
     );
 
@@ -254,7 +254,7 @@ describe("EdgeRelay — build happy path", () => {
     stubGitHub(() => new Response(null, { status: 204 }));
     const resp = await worker.fetch(
       authedReq("/api/build", { method: "POST", body: JSON.stringify(VALID_BODY) }),
-      env({ BUILD_JOBS: fakeKv(store) }),
+      env({ EDGE_RELAY_KV: fakeKv(store) }),
       {} as ExecutionContext,
     );
     const text = await resp.text();
@@ -272,7 +272,7 @@ describe("EdgeRelay — build happy path", () => {
 
     const resp = await worker.fetch(
       authedReq("/api/build", { method: "POST", body: JSON.stringify(VALID_BODY) }),
-      env({ BUILD_JOBS: fakeKv(store), RUN_ID_WAIT_MS: "800" }),
+      env({ EDGE_RELAY_KV: fakeKv(store), RUN_ID_WAIT_MS: "800" }),
       {} as ExecutionContext,
     );
     expect(resp.status).toBe(200);
@@ -287,7 +287,7 @@ describe("EdgeRelay — build happy path", () => {
 
     const resp = await worker.fetch(
       authedReq("/api/build", { method: "POST", body: JSON.stringify(VALID_BODY) }),
-      env({ BUILD_JOBS: fakeKv(store) }),
+      env({ EDGE_RELAY_KV: fakeKv(store) }),
       {} as ExecutionContext,
     );
     expect(resp.status).toBe(502);
@@ -305,7 +305,7 @@ describe("EdgeRelay — rate limit", () => {
   it("returns 429 once the bucket is drained", async () => {
     const store = new Map<string, string>();
     stubGitHub(() => new Response("{}", { status: 200 }));
-    const e = env({ BUILD_JOBS: fakeKv(store), RATE_LIMIT_PER_MIN: "2" });
+    const e = env({ EDGE_RELAY_KV: fakeKv(store), RATE_LIMIT_PER_MIN: "2" });
 
     const codes: number[] = [];
     for (let i = 0; i < 4; i++) {
@@ -326,21 +326,21 @@ describe("EdgeRelay — /health", () => {
   it("returns 503 and names the problem when KV is unbound", async () => {
     const resp = await worker.fetch(
       new Request("https://edge-relay.test/health"),
-      env({ BUILD_JOBS: undefined as unknown as KVNamespace }),
+      env({ EDGE_RELAY_KV: undefined as unknown as KVNamespace }),
       {} as ExecutionContext,
     );
     expect(resp.status).toBe(503);
     const body = (await resp.json()) as { ok: boolean; kv: string; problems: string[] };
     expect(body.ok).toBe(false);
     expect(body.kv).toBe("error");
-    expect(body.problems.join(" ")).toContain("BUILD_JOBS");
+    expect(body.problems.join(" ")).toContain("EDGE_RELAY_KV");
   });
 
   it("returns 200 when KV round-trips and secrets are present", async () => {
     const store = new Map<string, string>();
     const resp = await worker.fetch(
       new Request("https://edge-relay.test/health"),
-      env({ BUILD_JOBS: fakeKv(store) }),
+      env({ EDGE_RELAY_KV: fakeKv(store) }),
       {} as ExecutionContext,
     );
     expect(resp.status).toBe(200);
@@ -356,7 +356,7 @@ describe("EdgeRelay — /health", () => {
     const store = new Map<string, string>();
     const resp = await worker.fetch(
       new Request("https://edge-relay.test/health"),
-      env({ BUILD_JOBS: fakeKv(store), GITHUB_TOKEN: "" }),
+      env({ EDGE_RELAY_KV: fakeKv(store), GITHUB_TOKEN: "" }),
       {} as ExecutionContext,
     );
     expect(resp.status).toBe(503);

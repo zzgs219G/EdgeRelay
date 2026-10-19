@@ -11,7 +11,7 @@ export default defineWorkersConfig({
             RELAY_TOKEN: "test-relay-token",
             // GITHUB_OWNER / GITHUB_REPO 由 wrangler.toml [vars] 提供。
           },
-          kvNamespaces: ["BUILD_JOBS"],
+          kvNamespaces: ["EDGE_RELAY_KV"],
         },
       },
     },

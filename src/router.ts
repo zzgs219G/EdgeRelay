@@ -177,18 +177,18 @@ async function healthCheck(env: Env): Promise<Response> {
   // KV 真实探测：写一个探针键再读回。
   let kvOk = false;
   try {
-    if (!env.BUILD_JOBS) {
-      problems.push("BUILD_JOBS 未绑定（wrangler.toml 的 [[kv_namespaces]]）");
+    if (!env.EDGE_RELAY_KV) {
+      problems.push("EDGE_RELAY_KV 未绑定（wrangler.toml 的 [[kv_namespaces]]）");
     } else {
       const probeKey = "health:probe";
-      await env.BUILD_JOBS.put(probeKey, String(Date.now()), { expirationTtl: 60 });
-      const back = await env.BUILD_JOBS.get(probeKey);
+      await env.EDGE_RELAY_KV.put(probeKey, String(Date.now()), { expirationTtl: 60 });
+      const back = await env.EDGE_RELAY_KV.get(probeKey);
       kvOk = back !== null;
-      if (!kvOk) problems.push("BUILD_JOBS 写入后读回为空");
+      if (!kvOk) problems.push("EDGE_RELAY_KV 写入后读回为空");
     }
   } catch (err) {
     problems.push(
-      `BUILD_JOBS 不可用: ${err instanceof Error ? err.message : String(err)}`,
+      `EDGE_RELAY_KV 不可用: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 

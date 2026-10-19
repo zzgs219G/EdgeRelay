@@ -18,13 +18,13 @@ function jobKey(jobId: string): string {
 }
 
 export async function putJob(env: Env, job: BuildJob): Promise<void> {
-  await env.BUILD_JOBS.put(jobKey(job.job_id), JSON.stringify(job), {
+  await env.EDGE_RELAY_KV.put(jobKey(job.job_id), JSON.stringify(job), {
     expirationTtl: retentionSeconds(env),
   });
 }
 
 export async function getJob(env: Env, jobId: string): Promise<BuildJob | null> {
-  const raw = await env.BUILD_JOBS.get(jobKey(jobId));
+  const raw = await env.EDGE_RELAY_KV.get(jobKey(jobId));
   if (!raw) return null;
   try {
     return JSON.parse(raw) as BuildJob;
@@ -48,11 +48,11 @@ export async function patchJob(
 
 /** Cron 兜底轮询用：列出所有未完结任务。 */
 export async function listOpenJobs(env: Env, limit = 200): Promise<BuildJob[]> {
-  const listed = await env.BUILD_JOBS.list({ prefix: "job:", limit });
+  const listed = await env.EDGE_RELAY_KV.list({ prefix: "job:", limit });
   const jobs: BuildJob[] = [];
   for (const key of listed.keys) {
     if (key.name.endsWith(":run_id_hint")) continue;
-    const raw = await env.BUILD_JOBS.get(key.name);
+    const raw = await env.EDGE_RELAY_KV.get(key.name);
     if (!raw) continue;
     try {
       const job = JSON.parse(raw) as BuildJob;

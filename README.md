@@ -198,7 +198,7 @@ curl https://edge-relay.wu.engineer/health
   "ok": false,
   "kv": "error",
   "missing": ["GITHUB_TOKEN"],
-  "problems": ["BUILD_JOBS 写入后读回为空", "未配置的 secret/vars: GITHUB_TOKEN"]
+  "problems": ["EDGE_RELAY_KV 写入后读回为空", "未配置的 secret/vars: GITHUB_TOKEN"]
 }
 ```
 
@@ -223,7 +223,7 @@ push 到 main 自动跑：类型检查 → 单元测试 → 部署。
 ```bash
 # 1. 建 KV namespace，把输出的 id 填进 wrangler.toml 的 [[kv_namespaces]]
 #    （namespace id 不是 secret，可以直接提交；wrangler 不支持 ${VAR} 语法）
-npx wrangler kv namespace create BUILD_JOBS
+npx wrangler kv namespace create EDGE_RELAY_KV
 
 # 2. 设 secrets（绝不进 git、绝不下发到 APP）
 npx wrangler secret put GITHUB_TOKEN      # apk-protect-action 的 Actions:Read+Write 令牌

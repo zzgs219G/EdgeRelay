@@ -37,21 +37,26 @@ pattern = "edge-relay.wu.engineer"
 custom_domain = true
 
 # ── KV：任务表 ───────────────────────────────────────────────────────
-# key = job:<uuid>，value = BuildJob JSON，TTL 见 JOB_RETENTION_DAYS。
+# binding = EDGE_RELAY_KV，与 Worker 名同源，Dashboard 绑定列表里一眼
+# 能认出归属。namespace title 用同名，wrangler 会建成
+# edge-relay-EDGE_RELAY_KV。
+#
+# key 规范：job:<uuid>（构建任务）、health:probe（健康检查探针）。
+# value = BuildJob JSON，TTL 见 JOB_RETENTION_DAYS。
 #
 # namespace id 可以直接提交进 git：它不是 secret（KV namespace id 只是
 # 一个标识符，访问控制靠 account 级的 API token）。不要试图用 ${VAR}
 # 环境变量替换——wrangler 不支持该语法，会导致 deploy 直接失败。
 #
-# 创建 namespace：
-#   npx wrangler kv namespace create BUILD_JOBS
+# 创建 namespace（在 PC 上跑，本机跑不了 wrangler）：
+#   npx wrangler kv namespace create EDGE_RELAY_KV
 # 把输出的 id（32 位十六进制）填到下面。
 #
 # 占位符故意用非法格式：wrangler 会在部署阶段就报
 #   KV namespace 'SET_ME' is not valid [code: 10042]
 # 而不是等部署成功、线上请求时才在 KV 上炸。失败得越早越便宜。
 [[kv_namespaces]]
-binding = "BUILD_JOBS"
+binding = "EDGE_RELAY_KV"
 id = "SET_ME"
 
 # ── Cron：每分钟兜底轮询未完结任务 ───────────────────────────────────
