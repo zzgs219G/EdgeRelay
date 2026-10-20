@@ -34,6 +34,44 @@ function invTimePrefix(createdAtMs: number): string {
   return inv.toString(36).padStart(11, "0");
 }
 
+/**
+ * 判定任务是否已「停滞」——queued 且迟迟没绑上 run_id。
+ *
+ * 为什么必须有这个判断（踩过坑）：
+ *   `waitForRunId` 只同步等 RUN_ID_WAIT_MS（默认 4s），匹配不上就以
+ *   queued + run_id=null 落库，指望 cron 后续补绑。但若那次 dispatch
+ *   其实没触发成功（GitHub 偶发静默失败、或 ref 名不对），cron 的
+ *   `listRecentRuns` 也永远匹配不到候选，于是：
+ *     - status.ts 看到 run_id===null，原样返回不推进
+ *     - reconcile 看到 !candidate，return 不推进
+ *     - jobs.ts 的 has_active 恒为 true
+ *     - 前端轮询永不停（只被前端的 120 次上限挡一下，刷新即归零）
+ *     - cron 每分钟仍为它 list + get，持续 7 天（KV TTL）
+ *
+ * 也就是说：一条永远 queued 的僵尸任务会连续 7 天每分钟消耗 KV，
+ * 而它自己永远等不到 completed。这里给一个任务级超时，到点主动判死，
+ * 让 has_active 归 false，前端轮询与 cron 的 N+1 同时停。
+ *
+ * @param env    运行环境（读 JOB_STALL_TIMEOUT_MIN）
+ * @param job    待判定任务
+ * @param nowMs  当前时间（测试可注入）
+ */
+export function isStalled(
+  env: Env,
+  job: Pick<BuildJob, "status" | "run_id" | "created_at_ms">,
+  nowMs: number = Date.now(),
+): boolean {
+  // 只有 queued 且没绑上 run_id 的才可能停滞。in_progress 有 run_id，
+  // 状态推进由 GitHub 侧负责，不该由网关判死（构建可能真的跑很久）。
+  if (job.status !== "queued" || job.run_id !== null) return false;
+  const mins = Number.parseInt(env.JOB_STALL_TIMEOUT_MIN ?? "", 10);
+  const timeoutMin = Number.isFinite(mins) && mins > 0 ? mins : DEFAULT_STALL_TIMEOUT_MIN;
+  return nowMs - job.created_at_ms > timeoutMin * 60_000;
+}
+
+/** 默认停滞阈值：10 分钟。远大于 waitForRunId 的 4s，也远大于 GitHub 排队延迟。 */
+export const DEFAULT_STALL_TIMEOUT_MIN = 10;
+
 function jobKey(jobId: string): string {
   return `job:${jobId}`;
 }
@@ -54,7 +92,13 @@ export async function getJob(env: Env, jobId: string): Promise<BuildJob | null> 
   }
 }
 
-/** 任务状态推进（只覆盖传入字段，保留其余）。 */
+/**
+ * 任务状态推进（只覆盖传入字段，保留其余）。
+ *
+ * 无条件写：`patchJob` 一定会刷新 `updated_at_ms`，因此调用方必须自己
+ * 先判断「值真的变了没有」——否则 reconcile 每分钟的例行刷新会把 KV
+ * 写额度（免费 1000 次/天）白白烧掉。见 reconcile.ts 的节流注释。
+ */
 export async function patchJob(
   env: Env,
   jobId: string,
@@ -70,10 +114,10 @@ export async function patchJob(
 /** Cron 兜底轮询用：列出所有未完结任务。 */
 export async function listOpenJobs(env: Env, limit = 200): Promise<BuildJob[]> {
   const listed = await env.EDGE_RELAY_KV.list({ prefix: "job:", limit });
+  // 并发读而非串行：wall clock 不随任务数线性增长。
+  const raws = await Promise.all(listed.keys.map((k) => env.EDGE_RELAY_KV.get(k.name)));
   const jobs: BuildJob[] = [];
-  for (const key of listed.keys) {
-    if (key.name.endsWith(":run_id_hint")) continue;
-    const raw = await env.EDGE_RELAY_KV.get(key.name);
+  for (const raw of raws) {
     if (!raw) continue;
     try {
       const job = JSON.parse(raw) as BuildJob;

@@ -406,34 +406,52 @@ Workers Builds → 把 `ci.yml` 里注释说明的 deploy job 加回来。
 
 | 方法 + 路径 | 说明 |
 |---|---|
-| `GET /api/config` | 当前生效配置。敏感字段只返回 `*_set` 与 `*_masked`，**永不回显明文** |
-| `PATCH /api/config` | 部分更新。body `{values:{...}, current_password?}`；未知键返回 400 |
+| `GET /api/config` | 当前生效配置。敏感字段返回明文 + `*_set` + `*_masked` |
+| `PATCH /api/config` | 部分更新。body `{values:{...}, clear?:[...]}`；未知键返回 400 |
 
 ```bash
-# 改仓库坐标（非敏感，无需密码）
+# 改仓库坐标（非敏感）
 curl -X PATCH https://<域名>/api/config \
   -H "Authorization: Bearer $RELAY_TOKEN" \
   -H "content-type: application/json" \
   -d '{"values":{"github_repo":"my-repo"}}'
 
-# 换 GitHub token（敏感，必须带当前密码）
+# 设置 GitHub token
 curl -X PATCH https://<域名>/api/config \
   -H "Authorization: Bearer $RELAY_TOKEN" \
   -H "content-type: application/json" \
-  -d '{"values":{"github_token":"ghp_xxx"},"current_password":"..."}'
+  -d '{"values":{"github_token":"ghp_xxx"}}'
 
-# 清除某项覆盖，回退到 CF secret
+# 清除非敏感项的覆盖，回退到 CF secret
 curl -X PATCH https://<域名>/api/config \
   -H "Authorization: Bearer $RELAY_TOKEN" \
   -H "content-type: application/json" \
   -d '{"values":{"github_repo":""}}'
+
+# 清除敏感项必须显式声明意图——空串单独传来回被拒（400）
+curl -X PATCH https://<域名>/api/config \
+  -H "Authorization: Bearer $RELAY_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"values":{"github_token":""},"clear":["github_token"]}'
 ```
+
+### 为什么清除敏感字段要多带一个 `clear`
+
+空串的语义是「清除 KV 覆盖，回退 env」，这是有意设计。但它太容易误触：
+前端曾经有个 bug——关闭配置弹窗时把敏感输入框清成 `''`，而基线值仍是旧值，
+于是「空 ≠ 旧值」被判定为改动、保存按钮亮起；此时点保存就会把空串提交上来。
+若 CF 侧没有对应的 secret，**KV 里那份令牌就被删光了**，之后每次构建都是
+GitHub 401，而用户明明"设置过 token"（`docs/报错.md` 报的就是这个）。
+
+所以清除 `github_token` / `relay_token` / `relay_password` /
+`r2_access_key_id` / `r2_secret_access_key` 必须在 `clear` 数组里点名。
+误删从此变成一句可读的 400，而不是静默删掉凭证。
 
 ### 两条安全底线
 
-**1. 改敏感字段要二次确认密码。** `github_token` / `relay_token` /
-`relay_password` 的修改必须带 `current_password`——session cookie 可能
-因为共享设备或误开的窗口落到别人手里，而改这些字段等于整个后端被劫持。
+**1. 进面板即已登录，改凭证不再二次确认密码。** 能打开配置页说明已持有
+有效 session，而"能改"本身就意味着能让网关用任意凭证——给"写"再加一道
+密码挡不住实质风险，只是让「换自己的 key」这件正常操作变麻烦。防线在登录处。
 
 **2. env 里的密码和令牌始终有效（逃生舱）。** 这条很关键：
 
@@ -441,8 +459,9 @@ curl -X PATCH https://<域名>/api/config \
   否则一旦你在 UI 里打错或忘了新密码，就彻底锁在门外，只能重开 CF 控制台。
 - `RELAY_TOKEN`：新旧令牌同时有效，APP 迁移期不会因为换令牌立刻断掉。
 
-这两条都有测试钉死（`test/config_api.test.ts` 的
-`escape hatch: env password stays valid after KV override`）。
+逃生舱有测试钉死（`test/config_api.test.ts` 的
+`escape hatch: env password stays valid after KV override`），
+误删防护有 `test/config_secret_guard.test.ts`。
 
 ### 可配置项
 

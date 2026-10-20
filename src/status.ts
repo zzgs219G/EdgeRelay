@@ -15,7 +15,7 @@ import {
   getRun,
   GitHubError,
 } from "./github";
-import { getJob, patchJob, toAppStatus } from "./kv_store";
+import { DEFAULT_STALL_TIMEOUT_MIN, getJob, isStalled, patchJob, toAppStatus } from "./kv_store";
 import { error, json } from "./router";
 
 export async function handleStatus(env: Env, jobId: string): Promise<Response> {
@@ -32,6 +32,19 @@ export async function handleStatus(env: Env, jobId: string): Promise<Response> {
   if (job.run_id === null) {
     // run_id 还没补上：等 cron 或 build 阶段的 waitForRunId。此时不能
     // 回查（没有 run_id 可查），原样返回 queued/in_progress。
+    //
+    // 但停滞任务例外：它可能永远补不上（那次 dispatch 没真触发），
+    // 继续原样返回会让前端一直轮询、has_active 恒为 true。这里顺手
+    // 判死，让 APP 立刻看到失败而不是无限等待。
+    if (isStalled(env, job)) {
+      const patch: Partial<BuildJob> = {
+        status: "completed" as JobStatus,
+        conclusion: "failure",
+        error: `任务超时：创建 ${DEFAULT_STALL_TIMEOUT_MIN} 分钟后仍未关联到流水线运行（可能未成功触发）`,
+      };
+      const updated = await patchJob(env, jobId, patch);
+      return json(toResponse(updated ?? { ...job, ...patch }));
+    }
     return json(toResponse(job));
   }
 
@@ -54,10 +67,19 @@ export async function handleStatus(env: Env, jobId: string): Promise<Response> {
       const updated = await patchJob(env, jobId, patch);
       return json(toResponse(updated ?? { ...job, ...patch }));
     }
-    // 仍在跑：顺带刷新 updated_at，让 APP 的「最后更新」时间有意义。
-    if (Date.now() - job.updated_at_ms > 30_000) {
-      await patchJob(env, jobId, { status: "in_progress" });
-    }
+    // 仍在跑：直接返回，不写 KV。
+    //
+    // 曾经这里每 30 秒写一次 `status: "in_progress"`，为的是刷新
+    // updated_at_ms。但 `updated_at_ms` 不出现在任何响应体里
+    // （toResponse 不含它，/api/jobs 的 payload 也不含它），唯一读它的
+    // 就是下面这句节流判断自己——等于「写一个没人看的字段，来节流后续
+    // 对同一个字段的写入」。
+    //
+    // 而 APP 每 5 秒轮询一次这个接口：40 分钟的构建 = 80 次无变化写。
+    // KV 写额度只有 1000 次/天，12 个任务就见底。
+    //
+    // 不再写。updated_at_ms 的语义收缩为「最后一次真实状态变化的时刻」，
+    // 完成时由下面的 patchJob 写入，elapsed_ms 仍然准确。
     return json(toResponse({ ...job, status: "in_progress" }));
   } catch (err) {
     const msg = err instanceof GitHubError ? describeGitHubError(err) : "查询 GitHub 失败";

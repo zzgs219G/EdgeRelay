@@ -4,19 +4,30 @@
  * 与 APP 用的 /api/status/:jobId 不同：这里一次要看多个任务，
  * 所以是独立的只读接口。同样走 cookie 或 Bearer 双通道（见 router.ts）。
  *
- * 性能约束（KV 免费额度很低，必须省）：
- *   免费额度：KV 读 100k/天，KV **list 仅 1k/天**。
- *   原实现是 N+1：list(100) + 每个 key 各 get 一次 = 101 次操作/请求。
- *   面板 5 秒轮询挂 8 小时 → 约 58 万次读、5760 次 list，直接把额度打爆。
+ * KV 额度（Cloudflare 免费档，见 developers.cloudflare.com/kv/platform/pricing）：
+ *   reads  100,000 / 天
+ *   writes  1,000 / 天
+ *   lists   1,000 / 天   ← 比 reads 少 100 倍，是最稀缺的资源
  *
- *   KV 没有批量 get，所以省不掉逐个读。真正的解法是「少读、少轮」：
- *     1. 用内存短缓存吸收高频轮询（同一 isolate 内 15s 内只打一次 KV）
- *     2. 前端只在「确有进行中任务」时轮询，且间隔拉长
+ * 历史上的错误认知：只盯着「面板 5 秒轮询会打爆读额度」，据此做了
+ * 15s 缓存。但真正超标的是另外两条路径，且都与面板无关：
+ *   1. cron 每分钟调 listOpenJobs → 1440 list/天，超 list 额度 44%
+ *      （见 reconcile.ts 的 120s 缓存）
+ *   2. refreshInProgress 每分钟 patchJob，状态没变也写
+ *      → 20 分钟任务写 20 次，写额度只够 50 个任务
+ *      （见 reconcile.ts 的 60s 节流）
+ *
+ * 本文件的缓存只解决面板这一条路径。
+ *
+ * 性能约束：
+ *   1. 用内存短缓存吸收高频轮询（同一 isolate 内 15s 内只打一次 KV）
+ *   2. 前端只在「确有进行中任务」时轮询，且间隔线性递增
+ *   3. has_active 排除停滞任务，避免僵尸任务让前端永不停
  *   见 frontend/src/views/Dashboard.vue 的 startPolling。
  */
 
 import type { BuildJob, Env } from "./types";
-import { toAppStatus } from "./kv_store";
+import { isStalled, toAppStatus } from "./kv_store";
 import { json } from "./http";
 
 /** 列表结果缓存 15 秒：面板轮询再频繁也只在缓存过期时真的读 KV。 */
@@ -80,7 +91,12 @@ export async function handleListJobs(env: Env, url: URL): Promise<Response> {
       can_log: j.run_id !== null,
     })),
     // 前端据此决定还要不要继续轮询：没有在途任务就停下来。
-    has_active: jobs.some((j) => j.status !== "completed"),
+    //
+    // 停滞任务（queued 且补不上 run_id）必须算作非活跃，否则前端会永远
+    // 轮询下去——它自己永远等不到 completed，而后端已把它判死。
+    has_active: jobs.some(
+      (j) => j.status !== "completed" && !isStalled(env, j),
+    ),
   };
 
   cache = { at: now, limit, payload };

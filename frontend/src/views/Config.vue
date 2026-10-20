@@ -505,13 +505,30 @@ function openEditor(key) {
 }
 
 function onEditorClosed() {
+  const closingKey = activeCardKey.value
   activeCardKey.value = ''
   // 眼睛状态复位：下次打开默认隐藏
   for (const k of Object.keys(revealed)) delete revealed[k]
-  // 回滚未保存的编辑（form 会被下一次 applyConfig 覆盖，
-  // 但这里先清掉敏感项，避免明文短暂滞留）
-  for (const k of ['github_token', 'relay_token', 'relay_password', 'r2_access_key_id', 'r2_secret_access_key']) {
-    form[k] = ''
+
+  // 回滚未保存的编辑：把本卡片的字段还原成 baseline（上次成功加载或
+  // 保存的值），而不是清空。
+  //
+  // 曾经在这里把敏感字段一律清成 ''，本意是「避免明文短暂滞留」，
+  // 却引出两个连带 bug：
+  //   1. 再打开编辑框时 Token 等显示为空——用户以为没保存成功
+  //      （docs/报错.md 报的就是这个）；
+  //   2. baseline 仍是旧值，于是「空 ≠ 旧值」被 editorDirty 判定为改动，
+  //      保存按钮亮起。此时点保存会把空串提交给 PATCH——而空串的语义
+  //      是「清除 KV 覆盖，回退 env」。若 CF 侧没配 GITHUB_TOKEN，
+  //      令牌就被删光了，之后每次构建都是 401 Requires authentication。
+  //
+  // 明文驻留的顾虑不成立：baseline 里本来就存着同一份值，load() 也会
+  // 重新填回来。真正的敏感面是「别把未保存的编辑当成保存」。
+  const card = CARDS.find((c) => c.key === closingKey)
+  if (card && baseline) {
+    for (const f of card.fields) {
+      form[f.key] = baseline[f.key] ?? ''
+    }
   }
 }
 

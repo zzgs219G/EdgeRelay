@@ -43,6 +43,8 @@ export async function handleGetConfig(env: ResolvedEnv): Promise<Response> {
 
 interface PatchBody {
   values?: Record<string, unknown>;
+  /** 显式声明要清除的敏感字段，防止误删凭证。 */
+  clear?: unknown;
 }
 
 /** PATCH /api/config */
@@ -84,11 +86,37 @@ export async function handlePatchConfig(
   const next: RelayConfig = { ...(await loadConfig(env)) };
   const problems: string[] = [];
 
+  /**
+   * 清除敏感字段需要显式意图。
+   *
+   * 空串的语义是「清除 KV 覆盖，回退 env」，这是有意设计（面板的
+   * 「恢复默认」、以及清空回退 CF secret 都靠它）。但它太容易误触：
+   * 前端曾经的 bug 把敏感输入框清成 '' 后又判成"改过了"，于是一次
+   * 手滑就把 KV 里的 GITHUB_TOKEN 删掉，之后每次构建都是 401。
+   *
+   * 折衷：普通字段照旧接受空串；**敏感字段**要清必须显式带
+   * `_clear: true`，例如 {"github_token": "", "github_token_clear": true}。
+   * 这样既保留清除能力，又让误清不可能发生。
+   */
+  const explicitClear = (body as { clear?: unknown }).clear;
+  const cleared = new Set<string>();
+  if (Array.isArray(explicitClear)) {
+    for (const k of explicitClear) {
+      if (typeof k === "string" && isConfigField(k)) cleared.add(k);
+    }
+  }
+
   for (const [key, rawVal] of entries) {
     const field = key as keyof RelayConfig;
 
     // 空串 / null 语义 = 清除该覆盖，回退 env
     if (rawVal === "" || rawVal === null || rawVal === undefined) {
+      if (isSecretField(key) && !cleared.has(key)) {
+        problems.push(
+          `清除敏感字段 ${key} 需要显式确认：请传 {"clear":["${key}"]}`,
+        );
+        continue;
+      }
       delete next[field];
       continue;
     }

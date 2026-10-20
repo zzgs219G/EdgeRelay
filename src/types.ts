@@ -169,6 +169,8 @@ export interface Env {
   RATE_LIMIT_PER_MIN?: string;
   /** KV 中任务记录的保留天数，默认 7。 */
   JOB_RETENTION_DAYS?: string;
+  /** queued 任务停滞多久后判死（分钟），默认 10。0 或非法值回落默认。 */
+  JOB_STALL_TIMEOUT_MIN?: string;
   /** dispatch 后等待 run_id 出现的最大毫秒数，默认 4000。 */
   RUN_ID_WAIT_MS?: string;
 }

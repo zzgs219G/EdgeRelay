@@ -28,6 +28,16 @@ import { error, json } from "./router";
 const MAX_CONFIG_BYTES = 64 * 1024;
 const MAX_URL_BYTES = 2048;
 
+/**
+ * dispatch 后探测 runs 列表的次数。
+ *
+ * 3 次的依据：GitHub 的 workflow_dispatch 通常在 1-2 秒后就能在
+ * runs 列表看到新 run，但存在偶发延迟。默认预算 4 秒 / 3 次 ≈ 每 1.3 秒
+ * 探测一次，能覆盖这个分布；再多对 4 秒预算无意义（间隔被压到比 RTT
+ * 还短，连续两次拿到同一份列表）。
+ */
+const RUN_ID_PROBE_ATTEMPTS = 3;
+
 export async function handleBuild(
   request: Request,
   env: Env,
@@ -105,12 +115,19 @@ export async function handleBuild(
 
   // 同步等 run_id（不占满整个请求预算，失败可丢弃）。
   const runId = await waitForRunId(env, body.workflow_file, now);
-  const updated = await putJobAndReturn(env, {
-    ...job,
-    run_id: runId,
-    status: runId ? "in_progress" : "queued",
-    updated_at_ms: Date.now(),
-  });
+
+  // 没拿到 run_id 就不写第二次：状态仍是 queued，与落库时一致，
+  // 这次写只会白耗一次 KV 写额度（免费 1000 次/天）。
+  // run_id 由 status.ts 的「读缺失即回查」与 cron 补绑，见 kv_store.ts。
+  const finalStatus = runId !== null ? "in_progress" : job.status;
+  if (runId !== null) {
+    await putJobAndReturn(env, {
+      ...job,
+      run_id: runId,
+      status: finalStatus,
+      updated_at_ms: Date.now(),
+    });
+  }
 
   // 已经把状态写成 in_progress 了，这里顺手触发一次状态刷新不划算——
   // cron 每分钟兜底 + APP 轮询 /api/status 都会推进，无需 waitUntil。
@@ -121,7 +138,7 @@ export async function handleBuild(
   const resp: BuildResponse = {
     success: true,
     job_id: jobId,
-    status: updated.status,
+    status: finalStatus,
   };
   return json(resp, 200);
 }
@@ -136,20 +153,44 @@ function buildDispatchInputs(body: BuildRequest): Record<string, string> {
 }
 
 /**
- * dispatch 后轮询 runs 列表拿 run_id。
- * 每次间隔 700ms，总预算 RUN_ID_WAIT_MS（默认 4000ms，约 5 次）。
+ * dispatch 后探测 runs 列表拿 run_id。
+ *
+ * 固定探测次数而不是「等满预算」：每次探测自身要花一个 RTT（GitHub
+ * 正常 <300ms，慢时上秒），原实现的 `while (now < deadline)` 把等待
+ * 和 RTT 混在一起，注释写的「约 5 次」在 fetch 变慢时会缩到 2-3 次，
+ * 补绑成功率随网络波动。
+ *
+ * 改成「预算内最多探测 N 次，间隔均分」：探测次数确定，接住 GitHub
+ * 偶发延迟（run 通常 1-2 秒后才出现在列表里）的能力稳定。
+ *
+ * 补绑在这里做扎实， downstream 收益很大：run_id === null 的任务
+ * 正是会让 has_active 恒 true、触发停滞判死、并让 cron 每轮白打一次
+ * GitHub 的那一类（见 reconcile.ts 与 kv_store.ts 的 isStalled）。
+ *
+ * @param attempts 探测次数，默认 3（可经 RUN_ID_PROBE_ATTEMPTS 覆盖）
+ * @returns run_id，或 null（由 cron / status 回查补上）
  */
 async function waitForRunId(
   env: Env,
   workflowFile: string,
   sinceMs: number,
+  attempts = RUN_ID_PROBE_ATTEMPTS,
 ): Promise<number | null> {
   const budgetMs = Number.parseInt(env.RUN_ID_WAIT_MS ?? "4000", 10);
   const budget = Number.isFinite(budgetMs) && budgetMs > 0 ? budgetMs : 4000;
   const deadline = Date.now() + budget;
   const seen = new Set<number>();
 
-  while (Date.now() < deadline) {
+  // 间隔 = 预算均分给 attempts+1 段（最后一次探测后不必再等满）。
+  const gap = budget / (attempts + 1);
+
+  for (let i = 0; i < attempts; i++) {
+    // 关键：探测本身也要受预算约束。只查 deadline 来控制「等待」是不够的
+    // ——单次 fetch 就可能吃掉整个预算（GitHub 慢时一次 RTT 上秒），
+    // 那样 attempts 次串起来会把墙钟放大几倍，而 Worker 有墙钟上限。
+    // 已超时就不再发起新的上游调用。
+    if (Date.now() >= deadline) break;
+
     try {
       const runs = await listRecentRuns(env, workflowFile, sinceMs);
       for (const run of runs) {
@@ -158,16 +199,19 @@ async function waitForRunId(
         return run.run_id;
       }
     } catch {
-      // GitHub 瞬时抖动：继续等，不因此失败整个 build。
+      // GitHub 瞬时抖动：继续探测，不因此失败整个 build。
     }
-    await sleep(Math.min(700, Math.max(0, deadline - Date.now())));
+
+    // 末次探测后不等待；否则按 gap 等，但不越过 deadline。
+    if (i === attempts - 1) break;
+    const wait = Math.min(gap, Math.max(0, deadline - Date.now()));
+    if (wait > 0) await sleep(wait);
   }
   return null;
 }
 
-async function putJobAndReturn(env: Env, job: BuildJob): Promise<BuildJob> {
+async function putJobAndReturn(env: Env, job: BuildJob): Promise<void> {
   await putJob(env, job);
-  return job;
 }
 
 function sleep(ms: number): Promise<void> {
