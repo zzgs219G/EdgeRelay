@@ -116,10 +116,11 @@ export async function handleBuild(
   // cron 每分钟兜底 + APP 轮询 /api/status 都会推进，无需 waitUntil。
   void ctx;
 
+  // 刻意不返回 run_id：APP 只需要 job_id，而 run_id 属于 GitHub 侧信息，
+  // 下发即暴露。调试时用 /api/status（服务端内部会带上，但不含 run_id）。
   const resp: BuildResponse = {
     success: true,
     job_id: jobId,
-    run_id: runId,
     status: updated.status,
   };
   return json(resp, 200);

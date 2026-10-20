@@ -115,8 +115,6 @@ export interface BuildRequest {
 export interface BuildResponse {
   success: boolean;
   job_id: string;
-  /** run_id 补绑成功时带上，便于调试；正常情况下 APP 不需要它。 */
-  run_id?: number | null;
   status: JobStatus;
   error?: string;
 }

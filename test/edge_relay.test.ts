@@ -233,9 +233,15 @@ describe("EdgeRelay — build happy path", () => {
     );
 
     expect(resp.status).toBe(200);
-    const body = (await resp.json()) as { success: boolean; job_id: string; run_id: number };
+    const body = (await resp.json()) as {
+      success: boolean;
+      job_id: string;
+      run_id?: number;
+    };
     expect(body.success).toBe(true);
-    expect(body.run_id).toBe(987654);
+    // run_id 刻意不下发：APP 只需要 job_id，run_id 属于 GitHub 侧信息，
+    // 出现在响应里就等于暴露给客户端。内部仍会绑定（下面从 KV 断言）。
+    expect(body.run_id).toBeUndefined();
 
     // dispatch 必须带上 apk_url + protect_config，且打到正确的 workflow。
     const dispatch = seen.find((s) => s.includes("/dispatches"));
@@ -276,8 +282,9 @@ describe("EdgeRelay — build happy path", () => {
       {} as ExecutionContext,
     );
     expect(resp.status).toBe(200);
-    const body = (await resp.json()) as { run_id: number | null; status: string };
-    expect(body.run_id).toBeNull();
+    const body = (await resp.json()) as { run_id?: number; status: string };
+    // 同样不下发 run_id；状态仍能正确表达"还没绑上"
+    expect(body.run_id).toBeUndefined();
     expect(body.status).toBe("queued");
   });
 
