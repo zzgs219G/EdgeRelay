@@ -16,25 +16,30 @@
  */
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 240 10% 8%;
+    /* 背景不是死白：极淡的冷灰，让纯白容器能浮起来 */
+    --background: 240 20% 99%;
+    --foreground: 240 10% 9%;
 
     --card: 0 0% 100%;
-    --card-foreground: 240 10% 8%;
+    --card-foreground: 240 10% 9%;
 
-    /* 主色：近黑。强调色只用于关键动作，不做品牌色泛滥 */
-    --primary: 240 6% 10%;
-    --primary-foreground: 0 0% 98%;
+    /*
+     * 品牌色：干净的靛蓝（不是 2021 那种泛白的天蓝）。
+     * 早期版本问题不在蓝色，在于「蓝色渐变 + 彩色投影」的堆砌方式。
+     * 单色实心用在这里有品牌感又不廉价。
+     */
+    --primary: 230 90% 58%;
+    --primary-foreground: 0 0% 100%;
 
-    --muted: 240 5% 96%;
-    --muted-foreground: 240 4% 46%;
+    --muted: 240 8% 96%;
+    --muted-foreground: 240 5% 45%;
 
     --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 98%;
+    --destructive-foreground: 0 0% 100%;
 
-    --border: 240 6% 90%;
-    --input: 240 6% 90%;
-    --ring: 240 5% 65%;
+    --border: 240 8% 91%;
+    --input: 240 8% 89%;
+    --ring: 230 90% 58%;
   }
 
   * {
@@ -69,6 +74,17 @@
 }
 
 @layer utilities {
+  /*
+   * 顶部品牌色光晕。
+   * 纯色背景在任何分辨率下都显板正；一层极淡的径向渐变能给出纵深，
+   * 而不像 2021 那样用满屏渐变卡片堆装饰。
+   */
+  .bg-aurora {
+    background-image:
+      radial-gradient(60% 40% at 50% 0%, hsl(var(--primary) / 0.09), transparent 70%),
+      radial-gradient(40% 30% at 80% 10%, hsl(280 90% 60% / 0.05), transparent 70%);
+  }
+
   .truncate-1 {
     overflow: hidden;
     text-overflow: ellipsis;
