@@ -1,189 +1,77 @@
-/* woff2-only 的 RemixIcon 样式，由 scripts/patch-remixicon.mjs 生成 */
 @import "./generated/remixicon.css";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 /*
- * 设计语言对齐 vue-faka：
- *   浅色主题（#f8fafc 底 / 白卡片）、大圆角（16-20px）、极柔阴影、
- *   蓝色主色、RemixIcon 图标、Tailwind 原子类。
+ * 设计 token。
  *
- * 移动优先：以手机视口为基准排布，sm/md/lg 是渐进增强。
- */
-
-body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    Helvetica, Arial, sans-serif;
-  background-color: #f8fafc;
-  color: #334155;
-  margin: 0;
-  -webkit-tap-highlight-color: transparent;
-  -webkit-touch-callout: none;
-}
-
-* {
-  box-sizing: border-box;
-}
-
-/* iOS Safari 里 input font-size < 16px 会聚焦自动放大页面 */
-input,
-textarea,
-select {
-  font-size: 16px;
-  font-family: inherit;
-}
-
-/* ── Element Plus 移动端适配（照 vue-faka 的做法）───────────────── */
-
-/* 卡片去边框、加极柔阴影、大圆角 */
-.el-card {
-  border-radius: 16px !important;
-  border: none !important;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03) !important;
-  overflow: hidden;
-}
-
-/* 弹窗：手机上也别顶满屏 */
-.el-message-box {
-  width: 85% !important;
-  max-width: 340px;
-  border-radius: 16px !important;
-}
-/* 弹窗宽度交给使用方通过 width 属性决定；这里只管圆角与移动端上限。
- * 之前用 width:90%!important 会压掉 :width="520px" 这类显式设置。 */
-.el-dialog {
-  border-radius: 20px !important;
-  max-width: 92vw;
-}
-.el-drawer {
-  border-top-left-radius: 24px;
-  border-top-right-radius: 24px;
-}
-
-/* 控件圆角统一，去掉 EP 默认的方角 */
-.el-button {
-  border-radius: 10px;
-}
-.el-input__wrapper {
-  border-radius: 10px !important;
-  box-shadow: 0 0 0 1px #ebeef5 inset !important;
-  background-color: #fff;
-}
-
-/*
- * placeholder 与输入文字必须明显区分。
+ * 2026 的界面语言与 2021 的区别，主要不在配色而在**克制**：
+ *   - 不用卡片包裹一切，靠留白和分割线分区
+ *   - 阴影只在浮层（弹窗/下拉）出现，不做装饰性投影
+ *   - 圆角 8-10px，不用 20px+
+ *   - 字号收敛在 13-16px，靠字重与灰度分层，不靠大标题
  *
- * 踩过的坑：EP 默认 placeholder 是 #a8abb2，而输入文字用的
- * --el-text-color-regular 也是 #a8abb2——两者完全一样，导致空输入框
- * 看起来"已经有值了"。这里把输入文字压深、placeholder 调浅，拉开对比。
+ * 用 HSL 三元组便于将来做暗色主题（只换变量，不动组件）。
  */
-.el-input__inner,
-.el-textarea__inner {
-  color: #1e293b;
-}
-.el-input__inner::placeholder,
-.el-textarea__inner::placeholder {
-  color: #cbd5e1;
-}
-/* 只读/禁用态仍要能看清 */
-.el-input.is-disabled .el-input__inner {
-  color: #94a3b8;
-}
-.el-input__wrapper.is-focus {
-  box-shadow: 0 0 0 1px #3b82f6 inset !important;
-}
-.el-textarea__inner {
-  border-radius: 10px !important;
-  box-shadow: 0 0 0 1px #ebeef5 inset !important;
-  background-color: #fff;
-}
-.el-textarea__inner:focus {
-  box-shadow: 0 0 0 1px #3b82f6 inset !important;
-}
-.el-select__wrapper {
-  border-radius: 10px !important;
-  box-shadow: 0 0 0 1px #ebeef5 inset !important;
-  background-color: #fff;
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 240 10% 8%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 8%;
+
+    /* 主色：近黑。强调色只用于关键动作，不做品牌色泛滥 */
+    --primary: 240 6% 10%;
+    --primary-foreground: 0 0% 98%;
+
+    --muted: 240 5% 96%;
+    --muted-foreground: 240 4% 46%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 240 6% 90%;
+    --input: 240 6% 90%;
+    --ring: 240 5% 65%;
+  }
+
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  body {
+    margin: 0;
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: theme('fontFamily.sans');
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* 移动端：去掉点击高亮与长按菜单，更像原生 */
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+  }
+
+  /* iOS Safari 里 font-size < 16px 的输入框聚焦会放大页面 */
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+    font-family: inherit;
+  }
+
+  /* 焦点可见性：键盘导航时给清晰提示，鼠标点击不出现 */
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
 }
 
-/* 主色对齐 Tailwind 的 blue-500 */
-.el-button--primary {
-  --el-button-bg-color: #3b82f6;
-  --el-button-border-color: #3b82f6;
-  --el-button-hover-bg-color: #2563eb;
-  --el-button-hover-border-color: #2563eb;
-  --el-button-active-bg-color: #1d4ed8;
-}
-
-/*
- * 消息提示：只调观感，不动定位。
- * 定位（position:fixed / top / left / z-index）全部由
- * element-plus/theme-chalk/el-message.css 提供——那条 CSS 一旦漏引，
- * 消息条会掉进文档流卡在页面底部，看着像个去不掉的弹窗。
- */
-.el-message {
-  border-radius: 12px !important;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1) !important;
-}
-
-/* ── 动画（照 vue-faka）────────────────────────────────────────── */
-
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-.animate-fade-in { animation: fadeIn 0.3s ease-out; }
-
-@keyframes pulseDot {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.35; transform: scale(0.85); }
-}
-.animate-dot { animation: pulseDot 1.4s ease-in-out infinite; }
-
-/* ── 玻璃拟态 token（参考 CloudFlare-ImgBed 的渠道卡片）─────────── */
-:root {
-  --glass-bg: rgba(255, 255, 255, 0.72);
-  --glass-border: rgba(148, 163, 184, 0.18);
-  --glass-shadow: 0 4px 24px -8px rgba(15, 23, 42, 0.1);
-  --glass-header-bg: rgba(248, 250, 252, 0.72);
-  --glass-header-border: rgba(148, 163, 184, 0.14);
-}
-
-/* ── 玻璃拟态：吸顶栏 / 底栏 ───────────────────────────────────── */
-
-.glass-header {
-  background: rgba(255, 255, 255, 0.85);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-}
-.glass-tabbar {
-  background: rgba(255, 255, 255, 0.9);
-  backdrop-filter: blur(15px);
-  -webkit-backdrop-filter: blur(15px);
-  border-top: 1px solid rgba(0, 0, 0, 0.05);
-}
-
-/* ── 工具类 ─────────────────────────────────────────────────────── */
-
-.scrollbar-hide::-webkit-scrollbar { display: none; }
-.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
-
-/* 单行截断 */
-.truncate-1 {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 全局 loading 遮罩 */
-.global-loading-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 9999;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(248, 250, 252, 0.8);
-  backdrop-filter: blur(8px);
+@layer utilities {
+  .truncate-1 {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
