@@ -49,16 +49,32 @@ not_found_handling = "single-page-application"
 run_worker_first = true
 html_handling = "auto-trailing-slash"
 
-# 自定义域名（Wrangler 会代配 DNS + 边缘 TLS）。
-# zone 必须位于当前 Cloudflare 账号下。
+# ── 路由：这里刻意不写 [[routes]] ─────────────────────────────────
 #
-# 域名与上面的 name 无强制关系（域名只是路由到这个 Worker 的规则），
-# 但建议保持一致以免排查时混淆。若控制台里该 Worker 已绑了
-# edge-relay.wu.engineer，就保持这个值；若未绑定，wrangler 会在部署时
-# 自动创建 DNS 记录。
-[[routes]]
-pattern = "edge-relay.wu.engineer"
-custom_domain = true
+# 生产域名是自定义域 relay.614118.xyz，它在 Cloudflare 控制台
+# （Worker → Settings → Domains & Routes）绑定，独立于本文件。控制台的
+# 绑定不依赖 wrangler.toml，删掉这里的 routes 不影响它。
+#
+# 为什么删（踩过的坑）：
+#   原来这里有一段
+#       [[routes]]
+#       pattern = "edge-relay.wu.engineer"
+#       custom_domain = true
+#   `custom_domain = true` 要求该域名所在的 zone 属于当前账号，而
+#   wu.engineer 不在账号下，于是每次部署都在最后一步炸：
+#       Can't infer zone from route, please specify zone for
+#       "edge-relay.wu.engineer" [code: 10082]
+#   注意 Worker 本体在那之前已上传成功（日志里有 "Uploaded edge-relay"），
+#   所以现象极具误导性：部署命令报 Failed，线上代码其实换了。排障时会
+#   误以为"没部署上去"而反复重推。
+#
+# 如果将来确要让 wrangler 管理某个自定义域，需要二者之一：
+#   - 把该域名所在的 zone 加进当前 Cloudflare 账号，或
+#   - 在 routes 上补 zone_id / zone_name
+# 否则不要往这里加 custom_domain。
+#
+# workers_dev = true（文件顶部）仍然提供 <name>.<subdomain>.workers.dev
+# 的临时访问地址，它不需要 zone，可作排障用。
 
 # ── KV：任务表 ───────────────────────────────────────────────────────
 # binding = EDGE_RELAY_KV，与 Worker 名同源，Dashboard 绑定列表里一眼

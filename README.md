@@ -151,13 +151,19 @@ cookie 由 `POST /login` 种下，HMAC-SHA256 签名，**签名密钥从
 
 下面详述几个关键接口。
 
+> 示例里的 `https://relay.614118.xyz` 是生产自定义域（在 Cloudflare 控制台
+> 绑定）。`edge-relay.wu.engineer` 这个域名**已不存在**——它曾经写在
+> `wrangler.toml` 的 `[[routes]]` 里，而它所在的 zone 不在账号下，导致每次
+> 部署都在最后一步报 `Can't infer zone from route [code: 10082]`。
+> 现已从 toml 删除，详见 wrangler.toml 的「路由」注释。
+
 ### `GET /api/workflows`
 
 列出可用的流水线。
 
 ```
 curl -H "Authorization: Bearer $RELAY_TOKEN" \
-  https://edge-relay.wu.engineer/api/workflows
+  https://relay.614118.xyz/api/workflows
 ```
 
 ```json
@@ -213,7 +219,7 @@ curl -H "Authorization: Bearer $RELAY_TOKEN" \
 | `display_name` | 否 | APP 侧展示名，仅回显 |
 
 ```bash
-curl -X POST https://edge-relay.wu.engineer/api/build \
+curl -X POST https://relay.614118.xyz/api/build \
   -H "Authorization: Bearer $RELAY_TOKEN" \
   -H "content-type: application/json" \
   -d '{
@@ -247,7 +253,7 @@ curl -X POST https://edge-relay.wu.engineer/api/build \
 
 ```bash
 curl -H "Authorization: Bearer $RELAY_TOKEN" \
-  https://edge-relay.wu.engineer/api/status/b3f1...
+  https://relay.614118.xyz/api/status/b3f1...
 ```
 
 ```json
@@ -276,7 +282,7 @@ curl -H "Authorization: Bearer $RELAY_TOKEN" \
 不是恒为 `ok:true`：
 
 ```bash
-curl https://edge-relay.wu.engineer/health
+curl https://relay.614118.xyz/health
 ```
 
 健康时返回 200：
