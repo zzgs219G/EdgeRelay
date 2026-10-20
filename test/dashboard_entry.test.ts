@@ -114,6 +114,68 @@ describe("dashboard entry — the exact sequence after login", () => {
     expect(typeof body.has_active).toBe("boolean");
   });
 
+  it("degrades to 503 with the real reason instead of a bare 500 when KV is broken", async () => {
+    // 线上故障复现：KV list 抛错时，旧行为是路由总兜底的一句
+    // 「网关内部错误」，指不到任何原因。现在降级成 503 + 真实原因。
+    invalidateConfigCache();
+    invalidateJobsCache();
+
+    const brokenKv = {
+      async get() {
+        throw new Error("KV namespace not bound");
+      },
+      async put() {
+        throw new Error("KV namespace not bound");
+      },
+      async list() {
+        throw new Error("KV namespace not bound");
+      },
+    } as unknown as KVNamespace;
+
+    const resp = await worker.fetch(
+      await cookieReq("/api/jobs", env({ EDGE_RELAY_KV: brokenKv })),
+      env({ EDGE_RELAY_KV: brokenKv }),
+      {} as ExecutionContext,
+    );
+
+    expect(resp.status).toBe(503);
+    const body = (await resp.json()) as { code: string; error: string };
+    expect(body.code).toBe("upstream_error");
+    expect(body.error).toContain("KV namespace not bound");
+  });
+
+  it("falls back to a stale cache rather than failing when KV hiccups", async () => {
+    invalidateConfigCache();
+    invalidateJobsCache();
+
+    const { kv } = countingKv();
+    const e = env({ EDGE_RELAY_KV: kv });
+
+    // 先成功一次，把缓存建立起来
+    const first = await worker.fetch(await cookieReq("/api/jobs", e), e, {} as ExecutionContext);
+    expect(first.status).toBe(200);
+
+    // 缓存还在 15s 内，但把 KV 弄坏：应命中缓存，不打 KV
+    const flaky = {
+      async get() {
+        throw new Error("boom");
+      },
+      async put() {
+        throw new Error("boom");
+      },
+      async list() {
+        throw new Error("boom");
+      },
+    } as unknown as KVNamespace;
+
+    const second = await worker.fetch(
+      await cookieReq("/api/jobs", env({ EDGE_RELAY_KV: flaky })),
+      env({ EDGE_RELAY_KV: flaky }),
+      {} as ExecutionContext,
+    );
+    expect(second.status).toBe(200);
+  });
+
   it("also survives when the KV namespace is empty (fresh deploy)", async () => {
     invalidateConfigCache();
     invalidateJobsCache();

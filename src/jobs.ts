@@ -28,7 +28,7 @@
 
 import type { BuildJob, Env } from "./types";
 import { isStalled, toAppStatus } from "./kv_store";
-import { json } from "./http";
+import { json, error } from "./http";
 
 /** 列表结果缓存 15 秒：面板轮询再频繁也只在缓存过期时真的读 KV。 */
 const CACHE_TTL_MS = 15_000;
@@ -59,19 +59,36 @@ export async function handleListJobs(env: Env, url: URL): Promise<Response> {
     return json(cache.payload);
   }
 
-  const listed = await env.EDGE_RELAY_KV.list({ prefix: "job:", limit });
-  const jobs: BuildJob[] = [];
+  // 整个读路径包在 try 里：KV 抖动（namespace 未绑、额度打满、瞬时故障）
+  // 不该让面板拿到一句「网关内部错误」——那是路由的总兜底，指不到任何
+  // 具体原因。这里降级成 503 + 可读原因，用户知道该去看什么。
+  let listed: { keys: { name: string }[] };
+  let jobs: BuildJob[];
+  try {
+    listed = await env.EDGE_RELAY_KV.list({ prefix: "job:", limit });
+    jobs = [];
 
-  // 逐个 get 无法避免（KV 无批量读）。但只在缓存过期时执行，
-  // 实际频率从"每次轮询"降到"每 15 秒一次"。
-  for (const key of listed.keys) {
-    const raw = await env.EDGE_RELAY_KV.get(key.name);
-    if (!raw) continue;
-    try {
-      jobs.push(JSON.parse(raw) as BuildJob);
-    } catch {
-      /* 跳过坏行 */
+    // 逐个 get 无法避免（KV 无批量读）。但只在缓存过期时执行，
+    // 实际频率从"每次轮询"降到"每 15 秒一次"。
+    for (const key of listed.keys) {
+      const raw = await env.EDGE_RELAY_KV.get(key.name);
+      if (!raw) continue;
+      try {
+        jobs.push(JSON.parse(raw) as BuildJob);
+      } catch {
+        /* 跳过坏行 */
+      }
     }
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error("list jobs failed", { error: detail });
+    // 若有旧缓存，宁可给陈旧数据也别让面板空手——比报错好用。
+    if (cache) return json(cache.payload);
+    return error(
+      503,
+      "upstream_error",
+      `读取任务列表失败：${detail}（检查 KV namespace 绑定与当日额度）`,
+    );
   }
   jobs.sort((a, b) => b.created_at_ms - a.created_at_ms);
 

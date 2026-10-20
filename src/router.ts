@@ -163,11 +163,25 @@ export default {
             : error(404, "not_found", `未知路径 ${request.method} ${url.pathname}`);
       }
     } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
       console.error("unhandled route error", {
         path: url.pathname,
-        error: err instanceof Error ? err.message : String(err),
+        error: detail,
       });
-      return error(500, "internal_error", "网关内部错误");
+      // 把真实异常带回给调用方。
+      //
+      // 为什么改：曾经只返回「网关内部错误」五个字，而这是路由里唯一
+      // 的总兜底。结果一次线上 500（/api/jobs）排查时，CF Observability
+      // 只记了 request 行、看不出是哪个 handler 抛的，真实异常要另外去
+      // 后台翻 console.error 的另一条日志——排障成本极高。
+      //
+      // 安全性：能走到这里的请求都已通过 checkAuth（Bearer 或 session），
+      // 把异常消息回给已授权的调用方不构成泄漏。而 `detail` 只含错误
+      // 消息、不含堆栈与请求内容。
+      //
+      // 带上了调用方才拿得到 `err.stack` 之外的第一手信息，这也是
+      // dashboard_entry.test.ts 盯的场景。
+      return error(500, "internal_error", `网关内部错误：${detail}`);
     }
   },
 
