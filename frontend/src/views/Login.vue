@@ -1,18 +1,91 @@
+<template>
+  <div class="min-h-screen flex flex-col items-center justify-center px-6 py-10 relative">
+    <!-- 顶部一团蓝色光晕，给浅色页面一点层次，纯 CSS 无图片 -->
+    <div
+      class="absolute inset-x-0 top-0 h-72 pointer-events-none"
+      style="background: radial-gradient(70% 100% at 50% 0%, rgba(59,130,246,0.13), transparent 70%)"
+      aria-hidden="true"
+    />
+
+    <div class="w-full max-w-[340px] relative animate-fade-in">
+      <!-- 品牌 -->
+      <div class="text-center mb-9">
+        <div
+          class="w-20 h-20 bg-white rounded-3xl mx-auto flex items-center justify-center mb-5
+                 shadow-[0_8px_30px_rgba(0,0,0,0.08)]"
+        >
+          <i class="ri-shield-keyhole-fill text-4xl text-blue-500" />
+        </div>
+        <h1 class="text-2xl font-bold text-slate-800 tracking-tight">EdgeRelay</h1>
+        <p class="text-slate-400 text-sm mt-2 font-medium">APK 构建网关控制台</p>
+      </div>
+
+      <!-- 表单卡片 -->
+      <div class="bg-white p-6 rounded-[24px] shadow-[0_8px_30px_rgba(0,0,0,0.06)]">
+        <label class="block text-xs font-bold text-slate-500 mb-2">管理密码</label>
+        <el-input
+          v-model="password"
+          type="password"
+          placeholder="请输入管理密码"
+          show-password
+          size="large"
+          :disabled="auth.checking"
+          @keyup.enter="onLogin"
+        />
+
+        <el-button
+          type="primary"
+          size="large"
+          class="w-full font-bold !rounded-xl h-12 mt-4
+                 shadow-[0_1px_2px_rgba(16,24,40,0.08)]"
+          :loading="submitting"
+          :disabled="auth.checking"
+          @click="onLogin"
+        >
+          进入控制台
+        </el-button>
+      </div>
+
+      <!-- 后端配置问题直接摊在登录页：缺 secret 来这里就能看到，
+           而不是登进去才发现所有接口都坏。 -->
+      <!--
+        problems = 致命（KV 挂了，面板不可用）→ 红色
+        warnings = 非致命（缺 token 只影响构建 / APP）→ 琥珀色
+        分级展示，避免"只是还没配 APP 令牌"被渲染成整站故障。
+      -->
+      <div
+        v-if="auth.health && !auth.health.ok"
+        class="mt-4 bg-red-50 border border-red-100 rounded-2xl p-4"
+      >
+        <div class="flex items-center text-red-600 text-xs font-bold mb-2">
+          <i class="ri-error-warning-fill mr-1.5" /> 后端不可用
+        </div>
+        <ul class="text-[11px] text-red-700/80 space-y-1 leading-relaxed">
+          <li v-for="p in auth.health.problems || []" :key="p">{{ p }}</li>
+        </ul>
+      </div>
+      <div
+        v-else-if="auth.health && auth.health.warnings?.length"
+        class="mt-4 bg-amber-50 border border-amber-100 rounded-2xl p-4"
+      >
+        <div class="flex items-center text-amber-600 text-xs font-bold mb-2">
+          <i class="ri-information-fill mr-1.5" /> 部分功能未就绪
+        </div>
+        <ul class="text-[11px] text-amber-700/80 space-y-1 leading-relaxed">
+          <li v-for="w in auth.health.warnings" :key="w">{{ w }}</li>
+        </ul>
+      </div>
+
+      <p class="text-center text-[11px] text-slate-400 mt-6">
+        密码由 <code class="font-mono bg-slate-100 px-1.5 py-0.5 rounded">RELAY_PASSWORD</code> 提供
+      </p>
+    </div>
+  </div>
+</template>
+
 <script setup>
-/**
- * 登录页。
- *
- * 视觉取向：白底容器浮在极淡的冷灰背景上，顶部一层品牌色光晕给纵深。
- * 早前一版把所有装饰都去掉（纯白 + 黑按钮），结果像 Bootstrap 默认样式
- * ——极简不等于没有设计。这一版保留克制，但补齐三样东西：
- *   1. 品牌色（靛蓝）用于唯一的主操作
- *   2. 容器：12px 圆角 + 细边框 + 极淡阴影，让表单有落点
- *   3. 字重层次：品牌名/标题/正文/辅助文字四个级别
- */
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import Button from '../components/ui/Button.vue'
-import Input from '../components/ui/Input.vue'
 import { useAuthStore } from '../stores'
 
 const router = useRouter()
@@ -20,6 +93,7 @@ const auth = useAuthStore()
 const password = ref('')
 const submitting = ref(false)
 
+// 登录态探测与跳转由 router.beforeEach 统一处理——这里只管提交表单。
 async function onLogin() {
   if (submitting.value) return
   submitting.value = true
@@ -31,73 +105,3 @@ async function onLogin() {
   }
 }
 </script>
-
-<template>
-  <div class="bg-aurora flex min-h-dvh flex-col items-center justify-center px-5 py-10">
-    <div class="w-full max-w-[360px]">
-      <!-- 品牌区：图标用品牌色的淡底，不是纯灰 -->
-      <div class="mb-8 flex flex-col items-center text-center">
-        <div
-          class="mb-4 grid h-12 w-12 place-items-center rounded-xl
-                 bg-primary/10 ring-1 ring-primary/15"
-        >
-          <i class="ri-shield-keyhole-fill text-[22px] text-primary" />
-        </div>
-        <h1 class="text-[19px] font-semibold tracking-tight">EdgeRelay</h1>
-        <p class="mt-1 text-[13px] text-muted-foreground">APK 构建网关</p>
-      </div>
-
-      <!-- 表单容器 -->
-      <div
-        class="rounded-lg border border-border bg-card p-6
-               shadow-[0_1px_2px_rgba(16,24,40,0.04),0_8px_24px_-12px_rgba(16,24,40,0.12)]"
-      >
-        <label for="pw" class="mb-2 block text-[13px] font-medium text-foreground/85">
-          管理密码
-        </label>
-        <Input
-          id="pw"
-          v-model="password"
-          type="password"
-          show-password
-          placeholder="请输入密码"
-          autocomplete="current-password"
-          :disabled="auth.checking"
-          @keyup.enter="onLogin"
-        />
-
-        <Button
-          type="submit"
-          class="mt-5 w-full"
-          :loading="submitting"
-          :disabled="auth.checking || !password"
-          @click="onLogin"
-        >
-          进入控制台
-        </Button>
-
-        <!-- 后端状态：贴在容器内，不额外造告警块 -->
-        <div
-          v-if="auth.health && !auth.health.ok"
-          class="mt-4 rounded-md bg-destructive/10 px-3 py-2.5
-                 text-2xs leading-relaxed text-destructive"
-        >
-          <i class="ri-error-warning-fill mr-1" />
-          {{ (auth.health.problems || []).join('；') }}
-        </div>
-        <div
-          v-else-if="auth.health?.warnings?.length"
-          class="mt-4 rounded-md bg-muted px-3 py-2.5
-                 text-2xs leading-relaxed text-muted-foreground"
-        >
-          <i class="ri-information-fill mr-1" />
-          {{ auth.health.warnings.join('；') }}
-        </div>
-      </div>
-
-      <p class="mt-5 text-center font-mono text-2xs text-muted-foreground/60">
-        RELAY_PASSWORD
-      </p>
-    </div>
-  </div>
-</template>

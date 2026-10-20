@@ -73,9 +73,9 @@
            把营收当主指标的布局。任务网关里三个计数是同一件事的三个
            状态，合在一张卡里更省空间也更好扫读。 -->
       <section
-        class="rounded-[20px] p-5 text-white relative overflow-hidden mb-4
-               bg-gradient-to-br from-blue-500 to-blue-600
-               shadow-[0_8px_20px_rgba(59,130,246,0.3)]"
+        class="rounded-[14px] p-5 text-white relative overflow-hidden mb-4
+               bg-blue-600
+               shadow-[0_1px_2px_rgba(16,24,40,0.06),0_8px_24px_-12px_rgba(16,24,40,0.18)]"
       >
         <div class="absolute right-0 top-0 opacity-10 translate-x-4 -translate-y-4">
           <i class="ri-rocket-2-fill text-9xl" />
@@ -101,22 +101,22 @@
 
         <div class="relative grid grid-cols-3 gap-2">
           <div>
-            <div class="text-3xl font-black tracking-tight leading-none">{{ running }}</div>
+            <div class="text-2xl font-semibold tracking-tight leading-none">{{ running }}</div>
             <div class="text-[11px] text-blue-100 mt-1.5 opacity-90">进行中</div>
           </div>
           <div class="border-l border-white/20 pl-3">
-            <div class="text-3xl font-black tracking-tight leading-none">{{ succeeded }}</div>
+            <div class="text-2xl font-semibold tracking-tight leading-none">{{ succeeded }}</div>
             <div class="text-[11px] text-blue-100 mt-1.5 opacity-90">已成功</div>
           </div>
           <div class="border-l border-white/20 pl-3">
-            <div class="text-3xl font-black tracking-tight leading-none">{{ failed }}</div>
+            <div class="text-2xl font-semibold tracking-tight leading-none">{{ failed }}</div>
             <div class="text-[11px] text-blue-100 mt-1.5 opacity-90">已失败</div>
           </div>
         </div>
       </section>
 
       <!-- ── 发起构建 ────────────────────────────────────────── -->
-      <div class="bg-white rounded-[20px] p-5 shadow-[0_4px_12px_rgba(0,0,0,0.03)] mb-4">
+      <div class="bg-white rounded-[14px] p-5 shadow-[0_4px_12px_rgba(0,0,0,0.03)] mb-4">
         <button class="w-full flex items-center justify-between mb-1" @click="formOpen = !formOpen">
           <div class="text-left">
             <h2 class="font-bold text-slate-800 text-[15px]">发起构建</h2>
@@ -160,7 +160,7 @@
 
           <el-button
             type="primary"
-            class="w-full font-bold !rounded-xl h-12 shadow-[0_4px_14px_0_rgba(59,130,246,0.39)]"
+            class="w-full font-semibold !rounded-lg h-11 shadow-[0_1px_2px_rgba(16,24,40,0.08)]"
             :loading="job.submitting"
             :disabled="!formValid"
             @click="onBuild"
@@ -176,7 +176,7 @@
 
         <div
           v-if="!job.loading && job.jobs.length === 0"
-          class="bg-white rounded-[20px] p-10 text-center shadow-[0_4px_12px_rgba(0,0,0,0.03)]"
+          class="bg-white rounded-[14px] p-10 text-center shadow-[0_4px_12px_rgba(0,0,0,0.03)]"
         >
           <i class="ri-inbox-2-line text-4xl text-gray-300" />
           <p class="text-sm text-gray-400 mt-2">还没有任务</p>
@@ -250,7 +250,7 @@
                 rel="noopener"
                 class="inline-flex items-center text-xs font-bold text-white bg-blue-500
                        px-3 py-2 rounded-lg active:scale-95 transition
-                       shadow-[0_2px_8px_rgba(59,130,246,0.35)]"
+                       shadow-[0_1px_2px_rgba(16,24,40,0.08)]"
               >
                 <i class="ri-download-2-line mr-1 text-base" /> 下载产物
               </a>
