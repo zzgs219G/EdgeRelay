@@ -729,6 +729,120 @@ describe("signal light keeps cron from listing when idle", () => {
   });
 });
 
+// ── 9. /api/jobs 必须走索引，一次 list 都不做 ──────────────────────
+
+describe("the panel path never calls list()", () => {
+  it("serves /api/jobs from the id index with zero list after the first build", async () => {
+    // 线上故障的直接复现：面板轮询 /api/jobs 原来每 15s 一次 list，
+    // 额度 1000/天被轻松打穿 → 503「KV list() limit exceeded」。
+    // 现在：索引建立后，后续轮询 0 次 list。
+    const { putNewJob } = await import("../src/kv_store");
+    const seeded = countingKv();
+    const e = env({ EDGE_RELAY_KV: seeded.kv });
+
+    // 建 3 个任务（这会追加索引 + 落库）
+    for (const id of ["job-a", "job-b", "job-c"]) {
+      await putNewJob(e, job({ job_id: id }));
+    }
+
+    // 用建任务后的真实状态起一个干净的计数 KV
+    const { kv, ops } = countingKv(Object.fromEntries(seeded.store));
+    invalidateJobsCache();
+    const e2 = env({ EDGE_RELAY_KV: kv });
+
+    // 模拟 10 次面板轮询
+    for (let i = 0; i < 10; i++) {
+      await worker.fetch(authedReq("/api/jobs"), e2, {} as ExecutionContext);
+    }
+
+    // 索引命中，一次 list 都没有
+    expect(ops.list).toBe(0);
+    // 且任务真的返回了（不是空列表假装成功）
+    const resp = await worker.fetch(authedReq("/api/jobs"), e2, {} as ExecutionContext);
+    const body = (await resp.json()) as { jobs: { job_id: string }[] };
+    expect(body.jobs.map((j) => j.job_id).sort()).toEqual(["job-a", "job-b", "job-c"]);
+  });
+
+  it("rebuilds the index from list() exactly once when it is missing", async () => {
+    // 首次部署 / KV 被清：索引不存在，此时允许一次 list 来重建，
+    // 但仅此一次——之后全靠索引。
+    const { kv, ops, store } = countingKv({
+      "job:x": JSON.stringify(job({ job_id: "x" })),
+      "job:y": JSON.stringify(job({ job_id: "y" })),
+    });
+    const e = env({ EDGE_RELAY_KV: kv });
+    invalidateJobsCache();
+
+    for (let i = 0; i < 5; i++) {
+      await worker.fetch(authedReq("/api/jobs"), e, {} as ExecutionContext);
+    }
+
+    // 5 次轮询只 1 次 list（第一次重建），后 4 次命中索引
+    expect(ops.list).toBe(1);
+    expect(store.has("meta:job_ids")).toBe(true);
+  });
+
+  it("keeps working when the daily list quota is exhausted", async () => {
+    // 这正是用户遇到的场景：额度用完后 list() 直接抛错。
+    // 有索引时面板必须完全不受影响。
+    const { kv } = countingKv({
+      "job:a": JSON.stringify(job({ job_id: "a" })),
+      "meta:job_ids": JSON.stringify(["a"]),
+      "meta:open_count": "1",
+    });
+    // 让 list 抛「额度超限」——索引路径碰不到它
+    const quotaKv = {
+      ...kv,
+      async list() {
+        throw new Error("KV list() limit exceeded for the day.");
+      },
+    } as unknown as KVNamespace;
+
+    const resp = await worker.fetch(
+      authedReq("/api/jobs"),
+      env({ EDGE_RELAY_KV: quotaKv }),
+      {} as ExecutionContext,
+    );
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as { jobs: unknown[] };
+    expect(body.jobs.length).toBe(1);
+  });
+
+  it("appends new jobs to the index so they show up immediately", async () => {
+    // 新建任务必须立刻出现在面板，等不到每小时对账。
+    const { putNewJob } = await import("../src/kv_store");
+    const { kv, store } = countingKv({ "meta:job_ids": JSON.stringify(["old"]) });
+    const e = env({ EDGE_RELAY_KV: kv });
+
+    await putNewJob(e, job({ job_id: "brand-new" }));
+
+    const ids = JSON.parse(store.get("meta:job_ids")!) as string[];
+    expect(ids[0]).toBe("brand-new"); // 最新的在前
+    expect(ids).toContain("old");
+  });
+});
+
+// ── 10. cron 的信号灯与索引互不干扰 ──────────────────────────────
+
+describe("cron signal light still guards the cron path", () => {
+  it("does no list when idle even with the index in place", async () => {
+    const { reconcileOpenJobs, invalidateOpenJobsCache } = await import("../src/reconcile");
+    invalidateOpenJobsCache();
+
+    const { kv, ops } = countingKv({
+      "meta:open_count": "0",
+      "meta:open_count_reconciled_at": String(Date.now()),
+      // 索引里有东西也不代表有未完结任务——信号灯说了算
+      "meta:job_ids": JSON.stringify(["old-1", "old-2"]),
+    });
+
+    await reconcileOpenJobs(env({ EDGE_RELAY_KV: kv }));
+
+    expect(ops.list).toBe(0);
+  });
+});
+
 // ── 8. 信号灯的写入侧维护 ─────────────────────────────────────────
 
 describe("signal light maintenance on the write side", () => {

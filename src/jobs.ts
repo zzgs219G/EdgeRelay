@@ -27,7 +27,13 @@
  */
 
 import type { BuildJob, Env } from "./types";
-import { isStalled, toAppStatus } from "./kv_store";
+import {
+  isStalled,
+  JOB_IDS_MAX,
+  readJobIds,
+  rebuildJobIds,
+  toAppStatus,
+} from "./kv_store";
 import { json, error } from "./http";
 
 /** 列表结果缓存 15 秒：面板轮询再频繁也只在缓存过期时真的读 KV。 */
@@ -62,23 +68,9 @@ export async function handleListJobs(env: Env, url: URL): Promise<Response> {
   // 整个读路径包在 try 里：KV 抖动（namespace 未绑、额度打满、瞬时故障）
   // 不该让面板拿到一句「网关内部错误」——那是路由的总兜底，指不到任何
   // 具体原因。这里降级成 503 + 可读原因，用户知道该去看什么。
-  let listed: { keys: { name: string }[] };
   let jobs: BuildJob[];
   try {
-    listed = await env.EDGE_RELAY_KV.list({ prefix: "job:", limit });
-    jobs = [];
-
-    // 逐个 get 无法避免（KV 无批量读）。但只在缓存过期时执行，
-    // 实际频率从"每次轮询"降到"每 15 秒一次"。
-    for (const key of listed.keys) {
-      const raw = await env.EDGE_RELAY_KV.get(key.name);
-      if (!raw) continue;
-      try {
-        jobs.push(JSON.parse(raw) as BuildJob);
-      } catch {
-        /* 跳过坏行 */
-      }
-    }
+    jobs = await loadRecentJobs(env, limit);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     console.error("list jobs failed", { error: detail });
@@ -123,4 +115,57 @@ export async function handleListJobs(env: Env, url: URL): Promise<Response> {
 /** 写操作后清缓存，让面板立刻看到新任务。 */
 export function invalidateJobsCache(): void {
   cache = null;
+}
+
+/**
+ * 取最近 N 条任务。**优先读索引，不调 list。**
+ *
+ * 为什么（线上故障的直接产物）：面板只要停在 Dashboard 就在轮询这个接口，
+ * 而它原来每 15s 一次 list。缓存是 isolate 级的、跨实例形同虚设，
+ * 实际轻松打出每天几千次 list —— KV list 额度只有 1000/天，于是整个
+ * 面板 503「KV list() limit exceeded for the day」。
+ *
+ * 现在：1 次 get 读索引 + N 次 get 读任务，0 次 list。
+ * get 的额度是 10 万/天，这是用便宜的换昂贵的。
+ *
+ * 索引读不到时（首次部署 / 被清 / KV 抖动）才退回 list 并重建索引——
+ * 这是一次性成本，且顺带修好索引。
+ */
+async function loadRecentJobs(env: Env, limit: number): Promise<BuildJob[]> {
+  const ids = await readJobIds(env);
+  if (ids !== null) {
+    const wanted = ids.slice(0, limit);
+    const raws = await Promise.all(
+      wanted.map((id) => env.EDGE_RELAY_KV.get(`job:${id}`)),
+    );
+    const jobs: BuildJob[] = [];
+    for (const raw of raws) {
+      if (!raw) continue;
+      try {
+        jobs.push(JSON.parse(raw) as BuildJob);
+      } catch {
+        /* 跳过坏行 */
+      }
+    }
+    return jobs;
+  }
+
+  // 索引不可用 → 兜底：真 list 一次，并重建索引供后续使用。
+  console.error("job id index missing, rebuilding from list()");
+  await rebuildJobIds(env, Math.max(limit, JOB_IDS_MAX));
+  const rebuilt = (await readJobIds(env)) ?? [];
+  const wanted = rebuilt.slice(0, limit);
+  const raws = await Promise.all(
+    wanted.map((id) => env.EDGE_RELAY_KV.get(`job:${id}`)),
+  );
+  const jobs: BuildJob[] = [];
+  for (const raw of raws) {
+    if (!raw) continue;
+    try {
+      jobs.push(JSON.parse(raw) as BuildJob);
+    } catch {
+      /* 跳过坏行 */
+    }
+  }
+  return jobs;
 }

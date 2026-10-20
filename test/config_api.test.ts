@@ -406,6 +406,7 @@ describe("GET /api/jobs — 缓存与 has_active", () => {
 
     const store = jobStore("completed");
     let kvGets = 0;
+    let kvLists = 0;
     const countingKv = {
       async get(k: string) {
         kvGets++;
@@ -415,6 +416,7 @@ describe("GET /api/jobs — 缓存与 has_active", () => {
         store.set(k, v);
       },
       async list(o: { prefix?: string; limit?: number } = {}) {
+        kvLists++;
         const keys = [...store.keys()]
           .filter((k) => k.startsWith(o.prefix ?? ""))
           .slice(0, o.limit ?? 1000)
@@ -429,9 +431,14 @@ describe("GET /api/jobs — 缓存与 has_active", () => {
     for (let i = 0; i < 5; i++) {
       await worker.fetch(req("/api/jobs", {}, AUTH), e, {} as ExecutionContext);
     }
-    // 5 次轮询共读 2 次 KV：1 次路由入口读配置（loadConfig 有 30s
-    // 缓存），1 次列表本身。不缓存的话是 5 次列表读 + 5 次配置读。
-    // 关键是「远小于轮询次数」。
-    expect(kvGets).toBeLessThanOrEqual(2);
+
+    // 关键在 list：它是最稀缺的额度（1000/天），必须被缓存吃掉。
+    // 第一次读会走「索引缺失 → 重建」而花 1 次 list，之后全靠缓存。
+    // 原断言是 kvGets <= 2，那是「1 list + 1 get」时代的数字；
+    // 现在索引路径是 get（便宜，10 万/天），读次数天然更高，
+    // 所以这里改成盯 list——那才是会让面板 503 的东西。
+    expect(kvLists).toBeLessThanOrEqual(1);
+    // get 仍必须远小于轮询次数（否则缓存就没起作用）
+    expect(kvGets).toBeLessThan(5);
   });
 });
