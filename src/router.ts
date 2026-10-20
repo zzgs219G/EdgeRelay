@@ -172,9 +172,13 @@ export default {
   },
 
   /**
-   * Cron 兜底：每分钟轮询所有未完结任务。
+   * Cron 兜底：每 2 分钟轮询未完结任务。
+   *
    * APP 轮询 /api/status 只读 KV，真正的 GitHub 调用集中在这里，
    * 把 GitHub API 消耗压到与任务数无关的固定节奏上。
+   *
+   * 频率为什么不是每分钟：KV list 额度 1000 次/天，见 wrangler.toml
+   * [triggers] 上方的说明。现由「信号灯 + 每 2 分钟」压到约 20 次/天。
    */
   async scheduled(_event: ScheduledEvent, env: Env, _ctx: ExecutionContext): Promise<void> {
     try {

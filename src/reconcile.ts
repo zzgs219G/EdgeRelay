@@ -24,7 +24,11 @@ import {
   DEFAULT_STALL_TIMEOUT_MIN,
   isStalled,
   listOpenJobs,
+  markSignalLightReconciled,
   patchJob,
+  readOpenCount,
+  reconcileSignalLight,
+  shouldReconcileSignalLight,
 } from "./kv_store";
 
 /** 单轮最多处理的任务数，防一次 cron 跑爆 GitHub 配额。 */
@@ -89,6 +93,39 @@ async function killStalled(env: Env, job: BuildJob): Promise<void> {
 }
 
 export async function reconcileOpenJobs(env: Env): Promise<{ processed: number }> {
+  // ── 第一道闸：信号灯 ──
+  //
+  // KV list 额度 1000 次/天，而 cron 每分钟醒一次。原实现每轮都 list，
+  // 加 120s 缓存也还有约 720 次/天，且空闲时照跑——而这个网关一天只有
+  // 几个构建、每次几分钟，绝大部分 list 是白花的。
+  //
+  // 现在先花 1 次 get 看信号灯（get 额度 10 万/天，1440 次只占 1.4%）：
+  //   0       → 没有未完结任务，直接睡，一次 list 都不做
+  //   > 0     → 有活，才往下走
+  //   null    → 读不到/没写过。保守当作「可能有任务」，继续往下。
+  //             宁可多 list 一次，也不能漏掉真在跑的任务。
+  //
+  // 信号灯在写入侧维护（putNewJob 建任务 +1、patchJob 跨终态线 -1），
+  // 写竞争只会让它偏小而不会偏大，偏小的后果是「晚一小时被发现」而非
+  // 「任务丢失」，由下面的每小时对账兜底。
+  const openCount = await readOpenCount(env);
+  if (openCount === 0) {
+    // 空闲：顺手做每小时对账（这是 24 次/天的固定成本）。
+    if (await shouldReconcileSignalLight(env)) {
+      await reconcileSignalLight(env);
+      await markSignalLightReconciled(env);
+      // 对账发现其实有任务（信号灯写漏了）→ 补上处理
+      const recount = await readOpenCount(env);
+      if (recount !== null && recount > 0) return processOpenJobs(env);
+    }
+    return { processed: 0 };
+  }
+
+  return processOpenJobs(env);
+}
+
+/** 真正处理未完结任务（信号灯已确认非零，或对账后确认有活）。 */
+async function processOpenJobs(env: Env): Promise<{ processed: number }> {
   const jobs = await listOpenJobsCached(env);
   let processed = 0;
 

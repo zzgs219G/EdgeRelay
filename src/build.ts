@@ -20,7 +20,7 @@ import {
   GitHubError,
   listRecentRuns,
 } from "./github";
-import { newJobId, putJob } from "./kv_store";
+import { newJobId, putJob, putNewJob } from "./kv_store";
 import { describeModules } from "./modules";
 import { invalidateJobsCache } from "./jobs";
 import { error, json } from "./router";
@@ -79,7 +79,9 @@ export async function handleBuild(
   };
 
   // 先落库再触发：dispatch 失败也能在任务表里留下痕迹，便于排查。
-  await putJob(env, job);
+  // 用 putNewJob 而非 putJob：它是唯一「新建任务」的语义入口，
+  // 顺带把未完结信号灯 +1（详见 kv_store.ts）。
+  await putNewJob(env, job);
   // 让面板立刻看到新任务，而不是等列表缓存（15s）过期。
   invalidateJobsCache();
 

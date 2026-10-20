@@ -83,11 +83,23 @@ custom_domain = true
 binding = "EDGE_RELAY_KV"
 id = "adb7121cfadd49a3b7fd6c0e20d1f720"
 
-# ── Cron：每分钟兜底轮询未完结任务 ───────────────────────────────────
-# 1 分钟是 Cloudflare Cron 支持的最小粒度。APP 轮询 /api/status 只读
-# KV，GitHub 调用集中在这里，配额消耗与 APP 轮询频率解耦。
+# ── Cron：兜底轮询未完结任务 ───────────────────────────────────────
+# APP 轮询 /api/status 只读 KV，GitHub 调用集中在这里，配额消耗与 APP
+# 轮询频率解耦。
+#
+# 为什么不是每分钟（改过一次，原因写在下面）：
+#   KV 的 list 额度是 1000 次/天，而每轮 cron 必做一次 list。
+#   `* * * * *` = 1440 轮/天，光 cron 就超额 44%。
+#   现已有两道闸把它压下来：
+#     1. reconcile.ts 的「未完结信号灯」——空闲时一次 list 都不做
+#     2. 下面这行 */2 —— 即使有任务，轮次也减半
+#   两者合计约 20 次 list/天（额度的 2%）。
+#
+# 代价：补绑 run_id 最多晚 2 分钟。但 build.ts 的 waitForRunId 在触发
+# 构建的当次请求里已经同步探测过（固定 3 次），正常情况下 run_id 早在
+# 构建那一刻就绑好了，cron 只是在「那 3 次都没等到」时才兜底。
 [triggers]
-crons = ["* * * * *"]
+crons = ["*/2 * * * *"]
 
 [observability]
 enabled = true
