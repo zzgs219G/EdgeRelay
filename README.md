@@ -26,6 +26,8 @@ APP 只持有网关签发的 `jobId`，不接触任何 GitHub 信息。
 | APK 上传 / 产物下载（R2 S3 签名） | **APP 直连** | 用的是 R2 自己的 access key，与 GitHub 无关 |
 | 拉 workflow 列表 + 解析 yml inputs | 网关 | 需要令牌，且暴露仓库路径 |
 | dispatch 触发构建 | 网关 | 需要令牌 |
+| **产物下载（R2 直链）** | **APP 直连** | R2 公开域名无需鉴权，直连最快 |
+| **产物下载（GitHub artifact 兜底）** | **必须走网关** | `<a>` 标签无法带 Authorization 头，浏览器裸奔必撞未认证限额，见 `/api/artifact/:jobId` |
 | 轮询 run 状态 / jobs / steps | 网关 | 需要令牌 |
 | 抓 R2 下载链接（job 注解） | 网关 | 需要令牌 |
 
@@ -146,6 +148,8 @@ cookie 由 `POST /login` 种下，HMAC-SHA256 签名，**签名密钥从
 | `GET /api/status/:jobId/steps` | job/step 级明细（按需拉，详情页用） |
 | `POST /api/r2/presign` | R2 预签名上传 URL（密钥不出网关） |
 | `GET /api/jobs` | 面板任务列表（15s 服务端缓存） |
+| `GET /api/log/:jobId` | 构建日志下载（网关带令牌取回后转发） |
+| `GET /api/artifact/:jobId` | 产物下载代理（GitHub artifact 兜底路径，`download_url` 是 R2 直链时不必走） |
 | `GET /api/config` | 运行时配置（含敏感字段明文 + 掩码） |
 | `PATCH /api/config` | 部分更新配置，立即生效 |
 
@@ -272,9 +276,9 @@ curl -H "Authorization: Bearer $RELAY_TOKEN" \
 状态推进有两个来源，取先到者：
 
 1. APP 轮询 `/api/status` 时，若 run 已完成，网关顺手抓下载链接并写回 KV；
-2. Cron 每分钟兜底轮询所有未完结任务。
+2. Cron 每 2 分钟兜底轮询未完结任务（先看信号灯，空闲时零 KV list）。
 
-因此即使 APP 不轮询，任务也会在 1 分钟内收敛到终态。
+因此即使 APP 不轮询，任务也会在 2 分钟内收敛到终态。
 
 ### `GET /health`
 
@@ -372,7 +376,7 @@ Root directory 留空（仓库根就是根）。
 push 到 main / PR 时跑：
 
 ```
-npm ci → tsc --noEmit → vitest（99 个）→ 前端 build → dist 同步校验
+npm ci → tsc --noEmit → vitest（182 个）→ 前端 build → dist 同步校验
 ```
 
 **只做质量门，不部署**——不需要任何 secret，48 秒跑完。
@@ -505,7 +509,16 @@ GitHub 401，而用户明明"设置过 token"（`docs/报错.md` 报的就是这
 
 `wrangler.toml` 的 `[vars]` 里的值作为 env 兜底，面板清空某项即回退到它。
 
-详细操作见 [`docs/运维流程.md`](docs/运维流程.md)。
+另有三个**只在 `[vars]` / secret 里配、面板不暴露**的项：
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `R2_PUBLIC_DOMAIN` | `https://r2.614118.xyz` | **必须配**。GitHub 会把注解里的域名打码成 `***`，网关用它补全；缺了它下载会一路兜底到 GitHub artifact 链接。非敏感值，故进 `[vars]` 而非 secret |
+| `job_stall_timeout_min` | `10` | queued 任务多久没绑上 run_id 就判死。防僵尸任务让 `has_active` 恒 true、前端永不停 |
+| `relay_session_ttl_sec` | `28800` | 面板 session cookie 有效期，clamp 到 [60, 30天] |
+
+详细操作见 [`docs/运维流程.md`](docs/运维流程.md)，
+变更历史与踩坑教训见 [`docs/变更历史.md`](docs/变更历史.md)。
 
 ## 安全模型
 
@@ -540,7 +553,7 @@ GitHub / R2。泄漏后轮换它即可止损。
 # 后端（Termux 上可跑：tsc / vitest 不依赖 workerd）
 npm install --ignore-scripts        # --ignore-scripts 必须加，workerd 无 Android 构建
 npm run typecheck                   # tsc --noEmit
-npm test                            # 99 个测试（node environment）
+npm test                            # 182 个测试（node environment）
 npm run build:frontend              # 构建 Vue 前端
 npx wrangler dev                    # 起本地 Worker（需要 PC，本机跑不了 workerd）
 ```
@@ -551,10 +564,28 @@ npx wrangler dev                    # 起本地 Worker（需要 PC，本机跑�
 
 ## 已知边界
 
-- **KV 免费额度很紧**：读 100k/天，**list 仅 1k/天**。面板 5 秒轮询挂
-  8 小时会打爆 5 倍。已做三层缓解：`/api/jobs` 15 秒服务端缓存、
-  前端只在有在途任务时轮询（间隔 20 秒）、后端返回 `has_active`
-  让前端知道何时停。改这块时务必重算额度。
+- **KV 的 `list` 是最稀缺的资源**：读 100k/天、写 1k/天、**list 也才 1k/天**
+  （后两项比读少 100 倍）。而 KV 没有查询能力，「最近 N 条任务」
+  「未完结任务」这两个需求原本都只能靠 `list()` 枚举实现。
+
+  现状已把 `list` 从 1440 次/天压到约 20 次/天，靠四层（改动历史见
+  `docs/变更历史.md`）：
+
+  1. **`job_id` 自带逆序时间戳**——让 `list()` 的字典序恰好等于创建时间倒序，
+     这是地基，不是额外成本。
+  2. **未完结信号灯**（`kv_store.ts` 的 `meta:open_count`）——cron 先花 1 次
+     `get` 看有没有活，为 0 直接睡，一次 list 都不做。空闲占一天绝大部分，
+     这一层吃掉最大的一块。
+  3. **`meta:job_ids` 索引**——面板的 `/api/jobs` 改读它，从「1 list + N get」
+     变成「1 get + N get」。**这条曾经被漏掉**，导致面板路径独自打爆额度，
+     是 2026-10-21 故障的直接原因。
+  4. **cron 改 2 分钟**（`*/2 * * * *`）+ 120s list 缓存——即使有任务，
+     轮次也从 1440 减半再减半。
+
+  尚有两条已知残余风险：索引靠「建任务时追加」维护，两个构建恰好同一毫秒
+  创建时会互相覆盖、丢一条面板记录（记录本身完好，APP 仍可查，cron 仍在
+  推）；索引重建有 10 分钟节流，节流期内面板只能拿空列表并显示提示。
+  **动这块之前务必重算额度**，并且不要只看 cron 路径——面板路径才是大头。
 - **KV 最终一致性**：写入后全球生效约 10-60s。已用两层兜底抵消：
   `/api/build` 同步等 run_id、`/api/status` 读缺失即回查 GitHub。
   终态一旦写入不会被覆盖回非终态，所以不会「跑完了还显示处理中」。
