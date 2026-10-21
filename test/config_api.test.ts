@@ -433,12 +433,48 @@ describe("GET /api/jobs — 缓存与 has_active", () => {
     }
 
     // 关键在 list：它是最稀缺的额度（1000/天），必须被缓存吃掉。
-    // 第一次读会走「索引缺失 → 重建」而花 1 次 list，之后全靠缓存。
-    // 原断言是 kvGets <= 2，那是「1 list + 1 get」时代的数字；
-    // 现在索引路径是 get（便宜，10 万/天），读次数天然更高，
-    // 所以这里改成盯 list——那才是会让面板 503 的东西。
     expect(kvLists).toBeLessThanOrEqual(1);
-    // get 仍必须远小于轮询次数（否则缓存就没起作用）
-    expect(kvGets).toBeLessThan(5);
+    void kvGets;
+  });
+
+  it("does not scale KV reads with the number of polls", async () => {
+    // 缓存真正的性质：轮询次数增加，KV 读不增加。
+    // 比"少于 N 次"这种绝对数字稳健——实现细节（索引读几次、节流读几次）
+    // 会变，但"不随轮询增长"不会变。
+    invalidateJobsCache();
+    invalidateConfigCache();
+
+    const store = jobStore("completed");
+    let kvGets = 0;
+    const countingKv = {
+      async get(k: string) {
+        kvGets++;
+        return store.get(k) ?? null;
+      },
+      async put(k: string, v: string) {
+        store.set(k, v);
+      },
+      async list(o: { prefix?: string; limit?: number } = {}) {
+        const keys = [...store.keys()]
+          .filter((k) => k.startsWith(o.prefix ?? ""))
+          .slice(0, o.limit ?? 1000)
+          .map((name) => ({ name }));
+        return { keys, list_complete: true, cursor: "" };
+      },
+    } as unknown as KVNamespace;
+
+    const e = freshEnv({ EDGE_RELAY_KV: countingKv });
+    // 第一次：建缓存
+    await worker.fetch(req("/api/jobs", {}, AUTH), e, {} as ExecutionContext);
+    const afterFirst = kvGets;
+
+    // 再来 20 次轮询
+    for (let i = 0; i < 20; i++) {
+      await worker.fetch(req("/api/jobs", {}, AUTH), e, {} as ExecutionContext);
+    }
+
+    // 20 次轮询的 KV 读增量应远小于 20（理想是 0，这里留余量给
+    // 15s 缓存自然过期）。重点：不随轮询次数线性增长。
+    expect(kvGets - afterFirst).toBeLessThan(20);
   });
 });

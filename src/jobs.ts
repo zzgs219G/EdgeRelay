@@ -32,9 +32,10 @@ import {
   JOB_IDS_MAX,
   readJobIds,
   rebuildJobIds,
+  shouldAttemptIndexRebuild,
   toAppStatus,
 } from "./kv_store";
-import { json, error } from "./http";
+import { json } from "./http";
 
 /** 列表结果缓存 15 秒：面板轮询再频繁也只在缓存过期时真的读 KV。 */
 const CACHE_TTL_MS = 15_000;
@@ -67,20 +68,20 @@ export async function handleListJobs(env: Env, url: URL): Promise<Response> {
 
   // 整个读路径包在 try 里：KV 抖动（namespace 未绑、额度打满、瞬时故障）
   // 不该让面板拿到一句「网关内部错误」——那是路由的总兜底，指不到任何
-  // 具体原因。这里降级成 503 + 可读原因，用户知道该去看什么。
+  // 具体原因。
   let jobs: BuildJob[];
+  let degraded = false;
   try {
-    jobs = await loadRecentJobs(env, limit);
+    const loaded = await loadRecentJobs(env, limit);
+    jobs = loaded.jobs;
+    degraded = loaded.degraded;
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     console.error("list jobs failed", { error: detail });
     // 若有旧缓存，宁可给陈旧数据也别让面板空手——比报错好用。
     if (cache) return json(cache.payload);
-    return error(
-      503,
-      "upstream_error",
-      `读取任务列表失败：${detail}（检查 KV namespace 绑定与当日额度）`,
-    );
+    jobs = [];
+    degraded = true;
   }
   jobs.sort((a, b) => b.created_at_ms - a.created_at_ms);
 
@@ -103,9 +104,17 @@ export async function handleListJobs(env: Env, url: URL): Promise<Response> {
     //
     // 停滞任务（queued 且补不上 run_id）必须算作非活跃，否则前端会永远
     // 轮询下去——它自己永远等不到 completed，而后端已把它判死。
-    has_active: jobs.some(
+    //
+    // 降级时（拿不到列表）也算非活跃：没有数据就不该继续轮询，
+    // 那只会每 15 秒去撞一次注定失败的 list。
+    has_active: !degraded && jobs.some(
       (j) => j.status !== "completed" && !isStalled(env, j),
     ),
+    // 拿不到列表时给前端一句人话。降级时仍返回 200：这不是网关故障，
+    // 是 KV list 当日额度用尽，报 503 只会让人误以为服务挂了而反复刷新。
+    notice: degraded
+      ? "任务列表暂不可用：KV list 当日额度已用尽，00:00 UTC 重置后自动恢复"
+      : null,
   };
 
   cache = { at: now, limit, payload };
@@ -128,36 +137,47 @@ export function invalidateJobsCache(): void {
  * 现在：1 次 get 读索引 + N 次 get 读任务，0 次 list。
  * get 的额度是 10 万/天，这是用便宜的换昂贵的。
  *
- * 索引读不到时（首次部署 / 被清 / KV 抖动）才退回 list 并重建索引——
- * 这是一次性成本，且顺带修好索引。
+ * `degraded: true` 的含义：拿不到任务列表，但这不是故障——最常见的原因是
+ * KV list 当日额度用尽（00:00 UTC 重置）。此时返回空列表 + 标记，让前端
+ * 显示一句提示，而不是每轮请求都去撞一次注定失败的 list。
  */
-async function loadRecentJobs(env: Env, limit: number): Promise<BuildJob[]> {
+async function loadRecentJobs(
+  env: Env,
+  limit: number,
+): Promise<{ jobs: BuildJob[]; degraded: boolean }> {
   const ids = await readJobIds(env);
   if (ids !== null) {
-    const wanted = ids.slice(0, limit);
-    const raws = await Promise.all(
-      wanted.map((id) => env.EDGE_RELAY_KV.get(`job:${id}`)),
-    );
-    const jobs: BuildJob[] = [];
-    for (const raw of raws) {
-      if (!raw) continue;
-      try {
-        jobs.push(JSON.parse(raw) as BuildJob);
-      } catch {
-        /* 跳过坏行 */
-      }
-    }
-    return jobs;
+    return { jobs: await fetchJobsByIds(env, ids.slice(0, limit)), degraded: false };
   }
 
   // 索引不可用 → 兜底：真 list 一次，并重建索引供后续使用。
-  console.error("job id index missing, rebuilding from list()");
-  await rebuildJobIds(env, Math.max(limit, JOB_IDS_MAX));
-  const rebuilt = (await readJobIds(env)) ?? [];
-  const wanted = rebuilt.slice(0, limit);
-  const raws = await Promise.all(
-    wanted.map((id) => env.EDGE_RELAY_KV.get(`job:${id}`)),
-  );
+  //
+  // 但必须先过节流。曾经的实现没有节流，于是形成自残循环：
+  //   索引没建 → 调 list → 额度已耗尽、list 抛错 → 索引还是没建
+  //   → 下一次轮询再来一遍
+  // 用户看到的就是一句反复出现的「KV list() limit exceeded」，且每次重试
+  // 都在消耗（失败的 list 同样计入 Cloudflare 的操作计数）。
+  if (!(await shouldAttemptIndexRebuild(env))) {
+    return { jobs: [], degraded: true };
+  }
+
+  try {
+    await rebuildJobIds(env, Math.max(limit, JOB_IDS_MAX));
+    const rebuilt = (await readJobIds(env)) ?? [];
+    return { jobs: await fetchJobsByIds(env, rebuilt.slice(0, limit)), degraded: false };
+  } catch (err) {
+    // list 失败（多半是额度耗尽）。不抛：抛上去只会让面板拿到 503，
+    // 而 503 不会让任何人去修 KV——它只会让用户反复刷新。
+    console.error("job id index rebuild failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return { jobs: [], degraded: true };
+  }
+}
+
+/** 按 job_id 批量取任务。坏行跳过，已过期（TTL）的 key 返回 null 也跳过。 */
+async function fetchJobsByIds(env: Env, ids: string[]): Promise<BuildJob[]> {
+  const raws = await Promise.all(ids.map((id) => env.EDGE_RELAY_KV.get(`job:${id}`)));
   const jobs: BuildJob[] = [];
   for (const raw of raws) {
     if (!raw) continue;

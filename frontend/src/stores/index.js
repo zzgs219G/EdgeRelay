@@ -74,6 +74,8 @@ export const useJobStore = defineStore('job', () => {
   const submitting = ref(false)
   /** 是否存在未完结任务，决定前端要不要继续轮询 */
   const hasActive = ref(false)
+  /** 后端的降级提示（如 KV list 额度用尽）。非错误，但空列表需解释 */
+  const notice = ref('')
 
   /**
    * 拉任务列表。
@@ -90,6 +92,13 @@ export const useJobStore = defineStore('job', () => {
       // has_active 由后端算：没有在途任务时前端停止轮询，
       // 避免"全天挂着面板 → 打爆 KV 额度"。
       hasActive.value = d.has_active === true
+      // 后端降级提示（如 KV list 当日额度用尽）。不是错误，但必须让人
+      // 看见——否则空列表会被误解成"没有任务"。
+      if (d.notice) {
+        notice.value = d.notice
+      } else {
+        notice.value = ''
+      }
       return true
     } catch (e) {
       if (e.status === 401) {
@@ -127,5 +136,5 @@ export const useJobStore = defineStore('job', () => {
     }
   }
 
-  return { jobs, loading, workflows, submitting, hasActive, loadJobs, loadWorkflows, submit }
+  return { jobs, loading, workflows, submitting, hasActive, notice, loadJobs, loadWorkflows, submit }
 })

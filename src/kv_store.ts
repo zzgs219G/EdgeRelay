@@ -358,12 +358,12 @@ export async function appendJobId(env: Env, jobId: string): Promise<void> {
 /**
  * 用一次真实 list 重建索引。返回重建出的 id 数。
  *
- * 只在三种情况下调：
- *   1. 索引读不到（首次部署 / 被清空 / KV 抖动）
- *   2. 每小时一次的对账（与信号灯同一节奏，共用时间戳 key）
- *   3. 面板路径发现索引与预期不符时
+ * 调用前必须先过 `shouldAttemptIndexRebuild` 的节流——额度耗尽时这是个
+ * 会自残的路径：list 失败、索引仍未建立、下一次请求再来撞一次。
  */
 export async function rebuildJobIds(env: Env, limit = JOB_IDS_MAX): Promise<number> {
+  // 先记尝试时间：list 抛错时也要留下痕迹，否则节流失效。
+  await markIndexRebuildAttempt(env);
   const listed = await env.EDGE_RELAY_KV.list({ prefix: "job:", limit });
   // list 按 key 字典序返回，而 job_id 前缀是逆序时间 → 天然是新→旧，
   // 与索引约定一致，无需再排序。
@@ -374,6 +374,44 @@ export async function rebuildJobIds(env: Env, limit = JOB_IDS_MAX): Promise<numb
     /* 同上：写失败不阻塞 */
   }
   return ids.length;
+}
+
+/**
+ * 索引重建的节流窗口。
+ *
+ * 为什么必须在 KV 而不是 isolate 内存里：内存的话每个 isolate 各记一份，
+ * Cloudflare 随时起新 isolate，"10 分钟一次"会退化成"每 isolate 每 10 分钟"，
+ * 实例一多就等于没节流。
+ */
+export const INDEX_REBUILD_THROTTLE_MS = 10 * 60_000;
+
+const INDEX_ATTEMPT_KEY = "meta:job_ids_attempt_at";
+
+/** 距上次尝试是否已超过节流窗口。读失败 → true（宁可多试一次）。 */
+export async function shouldAttemptIndexRebuild(
+  env: Env,
+  nowMs: number = Date.now(),
+): Promise<boolean> {
+  try {
+    const raw = await env.EDGE_RELAY_KV.get(INDEX_ATTEMPT_KEY);
+    const last = raw ? Number.parseInt(raw, 10) : 0;
+    if (!Number.isFinite(last) || last <= 0) return true;
+    return nowMs - last > INDEX_REBUILD_THROTTLE_MS;
+  } catch {
+    return true;
+  }
+}
+
+/** 记录一次尝试（不论成败）。 */
+export async function markIndexRebuildAttempt(
+  env: Env,
+  nowMs: number = Date.now(),
+): Promise<void> {
+  try {
+    await env.EDGE_RELAY_KV.put(INDEX_ATTEMPT_KEY, String(nowMs));
+  } catch {
+    /* 写失败只会让下一次多试一次，无害 */
+  }
 }
 
 /**

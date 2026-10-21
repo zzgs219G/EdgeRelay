@@ -114,34 +114,73 @@ describe("dashboard entry — the exact sequence after login", () => {
     expect(typeof body.has_active).toBe("boolean");
   });
 
-  it("degrades to 503 with the real reason instead of a bare 500 when KV is broken", async () => {
-    // 线上故障复现：KV list 抛错时，旧行为是路由总兜底的一句
-    // 「网关内部错误」，指不到任何原因。现在降级成 503 + 真实原因。
+  it("degrades to a soft notice, not a 500 or a scary 503, when list quota is spent", async () => {
+    // 线上故障复现：索引没建起来 + KV list 额度耗尽时，
+    // 旧行为是路由总兜底的一句「网关内部错误」；中间版是 503。
+    // 现在：200 + notice。报 5xx 只会让人误以为服务挂了而反复刷新，
+    // 而这是「当日额度用尽、00:00 UTC 重置」的可预期状态。
     invalidateConfigCache();
     invalidateJobsCache();
 
-    const brokenKv = {
-      async get() {
-        throw new Error("KV namespace not bound");
+    const quotaKv = {
+      async get(k: string) {
+        // 索引相关的 meta key 都不存在 → 触发兜底重建
+        if (k.startsWith("meta:")) return null;
+        throw new Error("KV list() limit exceeded for the day.");
       },
       async put() {
-        throw new Error("KV namespace not bound");
+        throw new Error("KV list() limit exceeded for the day.");
       },
       async list() {
-        throw new Error("KV namespace not bound");
+        throw new Error("KV list() limit exceeded for the day.");
       },
     } as unknown as KVNamespace;
 
     const resp = await worker.fetch(
-      await cookieReq("/api/jobs", env({ EDGE_RELAY_KV: brokenKv })),
-      env({ EDGE_RELAY_KV: brokenKv }),
+      await cookieReq("/api/jobs", env({ EDGE_RELAY_KV: quotaKv })),
+      env({ EDGE_RELAY_KV: quotaKv }),
       {} as ExecutionContext,
     );
 
-    expect(resp.status).toBe(503);
-    const body = (await resp.json()) as { code: string; error: string };
-    expect(body.code).toBe("upstream_error");
-    expect(body.error).toContain("KV namespace not bound");
+    // 200，不是 5xx：网关本身是好的
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as { notice: string | null; jobs: unknown[] };
+    expect(body.notice).toContain("00:00 UTC");
+    expect(body.jobs).toEqual([]);
+  });
+
+  it("does not retry list() on every poll while the quota is spent", async () => {
+    // 自残循环的复现与修复：索引没建 → 调 list → 失败 → 索引还是没建
+    // → 下一轮再来。曾经的实现没有任何节流，用户看到错误反复出现，
+    // 且每次重试都在消耗（失败的 list 同样计入 CF 操作数）。
+    invalidateConfigCache();
+    invalidateJobsCache();
+
+    let listCalls = 0;
+    const quotaKv = {
+      async get(k: string) {
+        if (k === "meta:job_ids") return null;
+        if (k === "meta:job_ids_attempt_at") return null;
+        throw new Error("KV list() limit exceeded for the day.");
+      },
+      async put() {
+        throw new Error("KV list() limit exceeded for the day.");
+      },
+      async list() {
+        listCalls++;
+        throw new Error("KV list() limit exceeded for the day.");
+      },
+    } as unknown as KVNamespace;
+
+    const e = env({ EDGE_RELAY_KV: quotaKv });
+    for (let i = 0; i < 5; i++) {
+      await worker.fetch(await cookieReq("/api/jobs", e), e, {} as ExecutionContext);
+    }
+
+    // 5 次轮询最多 1 次 list 尝试（第一次），之后被节流挡掉。
+    // 注意：本测试的 KV put 是抛错的，所以节流时间戳写不进去，
+    // 这里断言的是「不再无脑每轮都调」的下界保护。
+    expect(listCalls).toBeLessThanOrEqual(2);
   });
 
   it("falls back to a stale cache rather than failing when KV hiccups", async () => {

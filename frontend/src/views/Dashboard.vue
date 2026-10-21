@@ -174,6 +174,16 @@
       <div>
         <h3 class="text-sm font-bold text-gray-800 mb-3 px-1">任务记录</h3>
 
+        <!-- 后端降级提示：不是错误。最典型的是 KV list 当日额度用尽，
+             此时列表是空的，不解释会被误读成"没有任务"。 -->
+        <div
+          v-if="job.notice"
+          class="mb-3 bg-amber-50 border border-amber-100 rounded-2xl px-4 py-3
+                 text-[11px] text-amber-700 leading-relaxed"
+        >
+          <i class="ri-information-fill mr-1" /> {{ job.notice }}
+        </div>
+
         <div
           v-if="!job.loading && job.jobs.length === 0"
           class="bg-white rounded-[14px] p-10 text-center shadow-[0_4px_12px_rgba(0,0,0,0.03)]"
