@@ -481,23 +481,46 @@ interface GhAnnotation {
 }
 
 /**
+ * 注解抓取的结果。`reason` 说明为什么没拿到 R2 直链——这不是可选的锦上添花：
+ * 曾经这里抓到被打码的 URL 却静默 `continue`，网关侧零痕迹，只有 APP 弹一句
+ * 「需令牌」，排查全靠读代码反推。
+ */
+export interface AnnotationResult {
+  url: string | null;
+  /** 失败原因（成功时为 null）。 */
+  reason:
+    | null
+    | "r2_public_domain_missing" // 注解里的域名被 GitHub 打码成 ***，而 R2_PUBLIC_DOMAIN 未配
+    | "no_apks_url_in_annotations" // 注解里没有 /apks/ 链接（流水线可能没喊 notice）
+    | "github_error"; // GitHub 调用失败（令牌/权限）
+}
+
+/**
  * 从 run 的 job 注解中抓取流水线 ::notice 喊出的 R2 产物路径。
  *
  * 与 jian_box TaskViewModel.fetchR2UrlFromAnnotations 等价：注解里
  * R2_PUBLIC_DOMAIN 会被 GitHub 打码成 ***，用 env.R2_PUBLIC_DOMAIN
- * 补全；抓不到返回 null，由调用方退回 artifact 兜底。
+ * 补全；抓不到由调用方退回 artifact 兜底。
  */
 export async function fetchDownloadUrlFromAnnotations(
   env: Env,
   runId: number,
-): Promise<string | null> {
+): Promise<AnnotationResult> {
   const publicDomain = (env as unknown as { R2_PUBLIC_DOMAIN?: string }).R2_PUBLIC_DOMAIN;
-  const jobsResp = await ghFetch(
-    env,
-    `/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/runs/${runId}/jobs?per_page=20`,
-  );
-  const jobsData = (await jobsResp.json()) as { jobs?: { id: number }[] };
+  let jobsData: { jobs?: { id: number }[] };
+  try {
+    const jobsResp = await ghFetch(
+      env,
+      `/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/runs/${runId}/jobs?per_page=20`,
+    );
+    jobsData = (await jobsResp.json()) as { jobs?: { id: number }[] };
+  } catch {
+    return { url: null, reason: "github_error" };
+  }
+
   const urlRegex = /(?:https?:\/\/[^\s"<>]+|\*\*\*)\/apks\/[^\s"<>]+/;
+  let sawMaskedUrl = false;
+
   for (const job of jobsData.jobs ?? []) {
     if (!job.id) continue;
     let annotations: GhAnnotation[] = [];
@@ -516,13 +539,18 @@ export async function fetchDownloadUrlFromAnnotations(
       if (!match) continue;
       let url = match[0];
       if (url.startsWith("***")) {
+        // 关键分支：域名被 GitHub 打码了。若 R2_PUBLIC_DOMAIN 没配，
+        // 这里曾经是静默 continue——现在记下来，让上层能报出真正原因。
+        sawMaskedUrl = true;
         if (!publicDomain) continue;
         url = publicDomain.replace(/\/$/, "") + url.slice(3);
       }
-      if (url.startsWith("http")) return url;
+      if (url.startsWith("http")) return { url, reason: null };
     }
   }
-  return null;
+
+  if (sawMaskedUrl) return { url: null, reason: "r2_public_domain_missing" };
+  return { url: null, reason: "no_apks_url_in_annotations" };
 }
 
 /** 注解抓不到时退回 run 的第一个 artifact 下载地址。 */

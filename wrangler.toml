@@ -147,8 +147,22 @@ JOB_RETENTION_DAYS = "7"
 # 超时不失败，job 以 queued 返回，由 cron 补绑。
 RUN_ID_WAIT_MS = "4000"
 
+# R2 公开域名。**必须配**，不是可选——缺了它下载按钮就是废的。
+#
+# 为什么必须：流水线把产物直链写进 run 注解，而 GitHub 会把出现在
+# Actions secret 里的域名打码成 `***`（例如 ***/apks/xxx.apk）。
+# 网关抓注解后要用这个值把 `***` 补回真实域名，才拿得到可直接下载的
+# R2 链接。补不回来时代码会退回 GitHub artifact 链接——而那个链接需要
+# GitHub 令牌，APP 早就不持有了，于是 jian_box 的 TaskViewModel 会拦住它
+# 并提示「该任务只有 GitHub Artifact 链接（需令牌）」。
+#
+# 为什么可以进 git：公开域名本身不敏感（见 README 的凭证表，
+# r2_public_domain 一栏标的是"非敏感、公开可读"），敏感的是
+# R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY——那两个仍走 secret。
+#
+# 曾经这里只在一段注释里写着"可选"，导致它从未被赋值，线上因此挂了很久。
+R2_PUBLIC_DOMAIN = "https://r2.614118.xyz"
+
 # Secrets（wrangler secret put 设置，绝不进 git / 前端）：
 #   GITHUB_TOKEN      — apk-protect-action 的 Actions:Read+Write 令牌
 #   RELAY_TOKEN       — 网关调用方令牌（APP 与后台面板共用）
-#   R2_PUBLIC_DOMAIN  — 可选。注解里域名被 GitHub 打码成 *** 时用于补全，
-#                        如 https://your-r2-domain.example

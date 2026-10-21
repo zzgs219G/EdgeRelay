@@ -9,14 +9,29 @@
 import type { BuildJob, Env, JobStatus, JobStatusResponse } from "./types";
 import {
   describeGitHubError,
-  fetchArtifactUrl,
-  fetchDownloadUrlFromAnnotations,
   fetchLogArtifactUrl,
   getRun,
   GitHubError,
 } from "./github";
 import { DEFAULT_STALL_TIMEOUT_MIN, getJob, isStalled, patchJob, toAppStatus } from "./kv_store";
+import { resolveDownloadUrl } from "./download_url";
 import { error, json } from "./router";
+
+/** 抓不到 R2 直链时的人类可读原因（写进日志，供 wrangler tail / CF 观测查看）。 */
+export function explainDownloadFailure(reason: string | null | undefined): string | null {
+  switch (reason) {
+    case "r2_public_domain_missing":
+      return "注解里的域名被 GitHub 打码成 ***，而网关未配 R2_PUBLIC_DOMAIN，无法补全 → 退回 GitHub artifact 链接（APP 无令牌，下不了）";
+    case "no_apks_url_in_annotations":
+      return "run 注解里没有 /apks/ 链接（流水线可能没喊 ::notice）→ 退回 GitHub artifact 链接";
+    case "github_error":
+      return "GitHub 调用失败（令牌或权限）";
+    case "no_artifact_either":
+      return "注解里没有 /apks/ 链接，且 run 没有可下载的 artifact";
+    default:
+      return null;
+  }
+}
 
 export async function handleStatus(env: Env, jobId: string): Promise<Response> {
   let job = await getJob(env, jobId);
@@ -52,17 +67,34 @@ export async function handleStatus(env: Env, jobId: string): Promise<Response> {
   try {
     const run = await getRun(env, job.run_id);
     if (run.status === "completed") {
-      const downloadUrl = run.conclusion === "success"
-        ? await fetchDownloadUrlFromAnnotations(env, run.run_id) ?? await fetchArtifactUrl(env, run.run_id)
-        : null;
+      const dl = run.conclusion === "success"
+        ? await resolveDownloadUrl(env, run.run_id)
+        : { url: null, reason: null, isArtifactFallback: false };
+      // 兜底原因必须留痕：曾经这里静默退回 artifact，网关侧零痕迹，
+      // 只有 APP 弹一句"需令牌"，排查全靠读代码反推。
+      if (dl.reason) {
+        console.error("download url fell back", {
+          job_id: job.job_id,
+          run_id: run.run_id,
+          reason: dl.reason,
+          hint: explainDownloadFailure(dl.reason),
+        });
+      }
       // 日志与成败无关：失败时更要看日志，所以无条件抓。
       const logUrl = await fetchLogArtifactUrl(env, run.run_id);
       const patch: Partial<BuildJob> = {
         status: "completed" as JobStatus,
         conclusion: run.conclusion,
-        download_url: downloadUrl,
+        download_url: dl.url,
         log_url: logUrl,
-        error: run.conclusion === "success" ? null : `流水线以 ${run.conclusion ?? "unknown"} 结束`,
+        // 兜底原因写到 error 里，让面板与 APP 都能看见"为什么下不了"。
+        // 这不覆盖真正的失败原因（conclusion 非 success 时那才该是 error）。
+        error:
+          run.conclusion !== "success"
+            ? `流水线以 ${run.conclusion ?? "unknown"} 结束`
+            : dl.isArtifactFallback
+              ? `产物链接兜底为 GitHub artifact（需令牌，APP 下不了）：${explainDownloadFailure(dl.reason) ?? "原因未知"}`
+              : null,
       };
       const updated = await patchJob(env, jobId, patch);
       return json(toResponse(updated ?? { ...job, ...patch }));

@@ -13,13 +13,13 @@
 import type { BuildJob, Env } from "./types";
 import {
   describeGitHubError,
-  fetchArtifactUrl,
-  fetchDownloadUrlFromAnnotations,
   fetchLogArtifactUrl,
   getRun,
   GitHubError,
   listRecentRuns,
 } from "./github";
+import { resolveDownloadUrl } from "./download_url";
+import { explainDownloadFailure } from "./status";
 import {
   DEFAULT_STALL_TIMEOUT_MIN,
   isStalled,
@@ -193,10 +193,15 @@ async function refreshInProgress(env: Env, job: BuildJob): Promise<void> {
   if (job.run_id === null) return;
   const run = await getRun(env, job.run_id);
   if (run.status !== "completed") return;
-  const downloadUrl =
-    run.conclusion === "success"
-      ? (await fetchDownloadUrlFromAnnotations(env, run.run_id)) ?? (await fetchArtifactUrl(env, job.run_id))
-      : null;
+  const dl = run.conclusion === "success" ? await resolveDownloadUrl(env, run.run_id) : null;
+  if (dl?.reason) {
+    console.error("download url fell back", {
+      job_id: job.job_id,
+      run_id: run.run_id,
+      reason: dl.reason,
+      hint: explainDownloadFailure(dl.reason),
+    });
+  }
   // 日志与成败无关：失败时更要看，所以无条件抓
   const logUrl = await fetchLogArtifactUrl(env, run.run_id);
   // 任务转终态，缓存必须失效——否则下一轮 cron 从缓存里读到的还是
@@ -205,8 +210,13 @@ async function refreshInProgress(env: Env, job: BuildJob): Promise<void> {
   await patchJob(env, job.job_id, {
     status: "completed",
     conclusion: run.conclusion,
-    download_url: downloadUrl,
+    download_url: dl?.url ?? null,
     log_url: logUrl,
-    error: run.conclusion === "success" ? null : `流水线以 ${run.conclusion ?? "unknown"} 结束`,
+    error:
+      run.conclusion !== "success"
+        ? `流水线以 ${run.conclusion ?? "unknown"} 结束`
+        : dl?.isArtifactFallback
+          ? `产物链接兜底为 GitHub artifact（需令牌，APP 下不了）：${explainDownloadFailure(dl.reason) ?? "原因未知"}`
+          : null,
   });
 }
