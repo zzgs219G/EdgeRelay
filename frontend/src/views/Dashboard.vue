@@ -255,7 +255,7 @@
               </a>
               <a
                 v-if="j.download_url"
-                :href="j.download_url"
+                :href="artifactHref(j)"
                 target="_blank"
                 rel="noopener"
                 class="inline-flex items-center text-xs font-bold text-white bg-blue-500
@@ -322,6 +322,23 @@ function statusLabel(s) {
   return {
     SUCCESS: '已成功', PROCESSING: '构建中', PENDING: '排队中', FAILED: '已失败',
   }[s] || s
+}
+
+/**
+ * 产物下载地址。
+ *
+ * 为什么不能一律直跳 download_url：当它是 GitHub artifact 链接时（R2 直链
+ * 没拿到时的兜底），`<a>` 标签点下去是一次**不带 Authorization 头**的跨域
+ * 请求，GitHub 按未认证计费——未认证限额只有 60 次/小时/IP，用户看到的是
+ * "API rate limit exceeded for <IP>"。而网关明明持有令牌。
+ *
+ * 所以：R2 公开直链（http、非 github）直连，快且不耗网关流量；
+ * 其余一律走 /api/artifact/:jobId，由网关带令牌取回后转发。
+ */
+function artifactHref(j) {
+  const url = j.download_url || ''
+  const isGithub = url.includes('api.github.com') || url.includes('/actions/artifacts/')
+  return isGithub ? `/api/artifact/${j.job_id}` : url
 }
 
 function fmtTime(ms) {

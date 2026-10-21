@@ -24,6 +24,7 @@ import { handleGetConfig, handlePatchConfig } from "./config_api";
 import { handlePresign } from "./r2_presign";
 import { handleStatusSteps } from "./status_steps";
 import { handleLogDownload } from "./log_proxy";
+import { handleArtifactDownload } from "./artifact_proxy";
 import { loadConfig, resolveEnv, type ResolvedEnv } from "./config";
 import { corsHeaders, error, json, timingSafeEqual, withCors } from "./http";
 
@@ -117,6 +118,15 @@ export default {
           const id = decodeURIComponent(url.pathname.slice("/api/log/".length));
           if (!id) return error(400, "bad_request", "缺少 jobId");
           return await handleLogDownload(cfg, id);
+        }
+
+        // 产物下载：同 log 的代理思路。download_url 是 GitHub artifact 链接时，
+        // 浏览器直连会因不带令牌而撞未认证限额（60 次/小时/IP），
+        // 必须由网关带令牌取回后再转发。
+        case url.pathname.startsWith("/api/artifact/") && request.method === "GET": {
+          const id = decodeURIComponent(url.pathname.slice("/api/artifact/".length));
+          if (!id) return error(400, "bad_request", "缺少 jobId");
+          return await handleArtifactDownload(cfg, id);
         }
 
         // 步骤明细必须排在 /api/status/ 前缀匹配之前，
