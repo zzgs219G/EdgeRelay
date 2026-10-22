@@ -9,61 +9,36 @@
  *   writes  1,000 / 天
  *   lists   1,000 / 天   ← 比 reads 少 100 倍，是最稀缺的资源
  *
- * 历史上的错误认知：只盯着「面板 5 秒轮询会打爆读额度」，据此做了
- * 15s 缓存。但真正超标的是另外两条路径，且都与面板无关：
- *   1. cron 每分钟调 listOpenJobs → 1440 list/天，超 list 额度 44%
- *      （见 reconcile.ts 的 120s 缓存）
- *   2. refreshInProgress 每分钟 patchJob，状态没变也写
- *      → 20 分钟任务写 20 次，写额度只够 50 个任务
- *      （见 reconcile.ts 的 60s 节流）
+ * 本路由的两道闸：
+ *   1. 读 job_id 索引替代 list（见 services/kv/job_index.ts）
+ *   2. 15s 内存缓存吸收面板高频轮询（见 services/job_list_cache.ts）
  *
- * 本文件的缓存只解决面板这一条路径。
- *
- * 性能约束：
- *   1. 用内存短缓存吸收高频轮询（同一 isolate 内 15s 内只打一次 KV）
- *   2. 前端只在「确有进行中任务」时轮询，且间隔线性递增
- *   3. has_active 排除停滞任务，避免僵尸任务让前端永不停
+ * 性能约束（前端配合）：
+ *   - 前端只在「确有进行中任务」时轮询，且间隔线性递增
+ *   - has_active 排除停滞任务，避免僵尸任务让前端永不停
  *   见 frontend/src/views/Dashboard.vue 的 startPolling。
  */
 
-import type { BuildJob, Env } from "./types";
+import type { BuildJob, Env } from "../shared/types";
+import { isStalled, toAppStatus } from "../domain/job";
 import {
-  isStalled,
+  getJobsByIds,
   JOB_IDS_MAX,
   readJobIds,
   rebuildJobIds,
   shouldAttemptIndexRebuild,
-  toAppStatus,
-} from "./kv_store";
-import { json } from "./http";
-
-/** 列表结果缓存 15 秒：面板轮询再频繁也只在缓存过期时真的读 KV。 */
-const CACHE_TTL_MS = 15_000;
-
-interface CachedList {
-  at: number;
-  limit: number;
-  payload: unknown;
-}
-
-/**
- * isolate 级缓存。
- *
- * 为什么安全：任务列表是「他自己的面板在看」的只读视图，15 秒的陈旧
- * 对体验无影响（构建本身要几分钟）。而省下的是数量级的 KV 调用。
- *
- * 不缓存单任务状态查询（/api/status）：那是 APP 轮询的热路径，
- * 单次 get 成本低，且新鲜度对「刚跑完要立刻看到」很关键。
- */
-let cache: CachedList | null = null;
+} from "../services/kv";
+import { CACHE_TTL_MS, readJobsCache, writeJobsCache } from "../services/job_list_cache";
+import { json } from "../shared/http";
 
 export async function handleListJobs(env: Env, url: URL): Promise<Response> {
   const limitRaw = Number.parseInt(url.searchParams.get("limit") ?? "50", 10);
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 50;
 
   const now = Date.now();
-  if (cache && now - cache.at < CACHE_TTL_MS && cache.limit >= limit) {
-    return json(cache.payload);
+  const cachedList = readJobsCache();
+  if (cachedList && now - cachedList.at < CACHE_TTL_MS && cachedList.limit >= limit) {
+    return json(cachedList.payload);
   }
 
   // 整个读路径包在 try 里：KV 抖动（namespace 未绑、额度打满、瞬时故障）
@@ -79,7 +54,7 @@ export async function handleListJobs(env: Env, url: URL): Promise<Response> {
     const detail = err instanceof Error ? err.message : String(err);
     console.error("list jobs failed", { error: detail });
     // 若有旧缓存，宁可给陈旧数据也别让面板空手——比报错好用。
-    if (cache) return json(cache.payload);
+    if (cachedList) return json(cachedList.payload);
     jobs = [];
     degraded = true;
   }
@@ -107,9 +82,7 @@ export async function handleListJobs(env: Env, url: URL): Promise<Response> {
     //
     // 降级时（拿不到列表）也算非活跃：没有数据就不该继续轮询，
     // 那只会每 15 秒去撞一次注定失败的 list。
-    has_active: !degraded && jobs.some(
-      (j) => j.status !== "completed" && !isStalled(env, j),
-    ),
+    has_active: !degraded && jobs.some((j) => j.status !== "completed" && !isStalled(env, j)),
     // 拿不到列表时给前端一句人话。降级时仍返回 200：这不是网关故障，
     // 是 KV list 当日额度用尽，报 503 只会让人误以为服务挂了而反复刷新。
     notice: degraded
@@ -117,13 +90,8 @@ export async function handleListJobs(env: Env, url: URL): Promise<Response> {
       : null,
   };
 
-  cache = { at: now, limit, payload };
+  writeJobsCache({ at: now, limit, payload });
   return json(payload);
-}
-
-/** 写操作后清缓存，让面板立刻看到新任务。 */
-export function invalidateJobsCache(): void {
-  cache = null;
 }
 
 /**
@@ -147,7 +115,7 @@ async function loadRecentJobs(
 ): Promise<{ jobs: BuildJob[]; degraded: boolean }> {
   const ids = await readJobIds(env);
   if (ids !== null) {
-    return { jobs: await fetchJobsByIds(env, ids.slice(0, limit)), degraded: false };
+    return { jobs: await getJobsByIds(env, ids.slice(0, limit)), degraded: false };
   }
 
   // 索引不可用 → 兜底：真 list 一次，并重建索引供后续使用。
@@ -164,7 +132,7 @@ async function loadRecentJobs(
   try {
     await rebuildJobIds(env, Math.max(limit, JOB_IDS_MAX));
     const rebuilt = (await readJobIds(env)) ?? [];
-    return { jobs: await fetchJobsByIds(env, rebuilt.slice(0, limit)), degraded: false };
+    return { jobs: await getJobsByIds(env, rebuilt.slice(0, limit)), degraded: false };
   } catch (err) {
     // list 失败（多半是额度耗尽）。不抛：抛上去只会让面板拿到 503，
     // 而 503 不会让任何人去修 KV——它只会让用户反复刷新。
@@ -173,19 +141,4 @@ async function loadRecentJobs(
     });
     return { jobs: [], degraded: true };
   }
-}
-
-/** 按 job_id 批量取任务。坏行跳过，已过期（TTL）的 key 返回 null 也跳过。 */
-async function fetchJobsByIds(env: Env, ids: string[]): Promise<BuildJob[]> {
-  const raws = await Promise.all(ids.map((id) => env.EDGE_RELAY_KV.get(`job:${id}`)));
-  const jobs: BuildJob[] = [];
-  for (const raw of raws) {
-    if (!raw) continue;
-    try {
-      jobs.push(JSON.parse(raw) as BuildJob);
-    } catch {
-      /* 跳过坏行 */
-    }
-  }
-  return jobs;
 }

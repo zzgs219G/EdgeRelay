@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/router";
-import type { BuildJob, Env } from "../src/types";
-import { invalidateConfigCache } from "../src/config";
-import { invalidateJobsCache } from "../src/jobs";
+import type { BuildJob, Env } from "../src/shared/types";
+import { invalidateConfigCache } from "../src/services/config";
+import { invalidateJobsCache } from "../src/services/job_list_cache";
 
 /**
  * KV 配额守卫测试。
@@ -248,7 +248,7 @@ describe("has_active does not count stalled jobs", () => {
 
 describe("cron list is cached, not 1440/day", () => {
   it("reuses the open-jobs list across ticks within the TTL", async () => {
-    const { reconcileOpenJobs, invalidateOpenJobsCache } = await import("../src/reconcile");
+    const { reconcileOpenJobs, invalidateOpenJobsCache } = await import("../src/services/reconcile");
 
     const running = job({ status: "in_progress", run_id: 1, updated_at_ms: Date.now() });
     const { kv, ops } = countingKv({
@@ -286,7 +286,7 @@ describe("cron list is cached, not 1440/day", () => {
 
 describe("in_progress refresh does not write when nothing changed", () => {
   it("writes nothing while the run is still going, however long it has been", async () => {
-    const { reconcileOpenJobs, invalidateOpenJobsCache } = await import("../src/reconcile");
+    const { reconcileOpenJobs, invalidateOpenJobsCache } = await import("../src/services/reconcile");
 
     // 10 分钟前创建、30 秒前刚更新过、仍在跑。
     // 注意 updated_at_ms 已经"很久没动"了——原实现的 30s / 60s 门槛
@@ -383,7 +383,7 @@ describe("in_progress refresh does not write when nothing changed", () => {
   });
 
   it("still writes when the run actually completed", async () => {
-    const { reconcileOpenJobs, invalidateOpenJobsCache } = await import("../src/reconcile");
+    const { reconcileOpenJobs, invalidateOpenJobsCache } = await import("../src/services/reconcile");
 
     const running = job({
       status: "in_progress",
@@ -419,7 +419,7 @@ describe("in_progress refresh does not write when nothing changed", () => {
   });
 
   it("writes a stalled job exactly once, then stops touching it", async () => {
-    const { reconcileOpenJobs, invalidateOpenJobsCache } = await import("../src/reconcile");
+    const { reconcileOpenJobs, invalidateOpenJobsCache } = await import("../src/services/reconcile");
 
     // 僵尸任务：补不上 run_id，应在第一轮就被判死
     const stale = job({
@@ -614,7 +614,7 @@ describe("signal light keeps cron from listing when idle", () => {
   const META = { "meta:open_count": "0", "meta:open_count_reconciled_at": String(Date.now()) };
 
   it("does no list at all when the signal light reads zero", async () => {
-    const { reconcileOpenJobs, invalidateOpenJobsCache } = await import("../src/reconcile");
+    const { reconcileOpenJobs, invalidateOpenJobsCache } = await import("../src/services/reconcile");
     invalidateOpenJobsCache();
 
     const { kv, ops } = countingKv(META);
@@ -627,7 +627,7 @@ describe("signal light keeps cron from listing when idle", () => {
   });
 
   it("still lists when the signal light reads non-zero", async () => {
-    const { reconcileOpenJobs, invalidateOpenJobsCache } = await import("../src/reconcile");
+    const { reconcileOpenJobs, invalidateOpenJobsCache } = await import("../src/services/reconcile");
     invalidateOpenJobsCache();
 
     const running = job({
@@ -655,7 +655,7 @@ describe("signal light keeps cron from listing when idle", () => {
   it("treats a missing signal light as 'maybe there is work' (fail safe)", async () => {
     // 从未写过信号灯 / KV 读失败时，绝不能因为读不到数就跳过——
     // 那会让真在跑的任务永远没人推进。宁可多 list 一次。
-    const { reconcileOpenJobs, invalidateOpenJobsCache } = await import("../src/reconcile");
+    const { reconcileOpenJobs, invalidateOpenJobsCache } = await import("../src/services/reconcile");
     invalidateOpenJobsCache();
 
     const running = job({
@@ -677,7 +677,7 @@ describe("signal light keeps cron from listing when idle", () => {
   });
 
   it("reconciles hourly and self-heals a drifted count", async () => {
-    const { reconcileOpenJobs, invalidateOpenJobsCache } = await import("../src/reconcile");
+    const { reconcileOpenJobs, invalidateOpenJobsCache } = await import("../src/services/reconcile");
     invalidateOpenJobsCache();
 
     // 信号灯说 0，但实际有 1 个未完结任务（写竞争漏加了）。
@@ -710,7 +710,7 @@ describe("signal light keeps cron from listing when idle", () => {
   });
 
   it("does not reconcile on every idle tick (that would cost 1440 lists)", async () => {
-    const { reconcileOpenJobs, invalidateOpenJobsCache } = await import("../src/reconcile");
+    const { reconcileOpenJobs, invalidateOpenJobsCache } = await import("../src/services/reconcile");
     invalidateOpenJobsCache();
 
     const { kv, ops } = countingKv({
@@ -736,7 +736,7 @@ describe("the panel path never calls list()", () => {
     // 线上故障的直接复现：面板轮询 /api/jobs 原来每 15s 一次 list，
     // 额度 1000/天被轻松打穿 → 503「KV list() limit exceeded」。
     // 现在：索引建立后，后续轮询 0 次 list。
-    const { putNewJob } = await import("../src/kv_store");
+    const { putNewJob } = await import("../src/services/kv");
     const seeded = countingKv();
     const e = env({ EDGE_RELAY_KV: seeded.kv });
 
@@ -811,7 +811,7 @@ describe("the panel path never calls list()", () => {
 
   it("appends new jobs to the index so they show up immediately", async () => {
     // 新建任务必须立刻出现在面板，等不到每小时对账。
-    const { putNewJob } = await import("../src/kv_store");
+    const { putNewJob } = await import("../src/services/kv");
     const { kv, store } = countingKv({ "meta:job_ids": JSON.stringify(["old"]) });
     const e = env({ EDGE_RELAY_KV: kv });
 
@@ -827,7 +827,7 @@ describe("the panel path never calls list()", () => {
 
 describe("cron signal light still guards the cron path", () => {
   it("does no list when idle even with the index in place", async () => {
-    const { reconcileOpenJobs, invalidateOpenJobsCache } = await import("../src/reconcile");
+    const { reconcileOpenJobs, invalidateOpenJobsCache } = await import("../src/services/reconcile");
     invalidateOpenJobsCache();
 
     const { kv, ops } = countingKv({
@@ -847,13 +847,13 @@ describe("cron signal light still guards the cron path", () => {
 
 describe("signal light maintenance on the write side", () => {
   async function reconcile() {
-    const m = await import("../src/reconcile");
+    const m = await import("../src/services/reconcile");
     m.invalidateOpenJobsCache();
     return m;
   }
 
   it("bumps the count when a job is created", async () => {
-    const { putNewJob } = await import("../src/kv_store");
+    const { putNewJob } = await import("../src/services/kv");
     const { kv, store } = countingKv({ "meta:open_count": "0" });
 
     await putNewJob(env({ EDGE_RELAY_KV: kv }), job({ job_id: "new1" }));
@@ -865,7 +865,7 @@ describe("signal light maintenance on the write side", () => {
     // putJob 是底层写、被 patchJob 复用。若它也 +1，则每次 patchJob 都会
     // 把信号灯推高——这个 bug 真实存在过（测试抓到过：两次 patchJob 后
     // 计数变成 3）。
-    const { putJob } = await import("../src/kv_store");
+    const { putJob } = await import("../src/services/kv");
     const { kv, store } = countingKv({ "meta:open_count": "1" });
 
     await putJob(env({ EDGE_RELAY_KV: kv }), job({ job_id: "abc" }));
@@ -874,7 +874,7 @@ describe("signal light maintenance on the write side", () => {
   });
 
   it("drops the count when a job reaches a terminal state", async () => {
-    const { putNewJob, patchJob } = await import("../src/kv_store");
+    const { putNewJob, patchJob } = await import("../src/services/kv");
     const { kv, store } = countingKv({
       "meta:open_count": "1",
       "job:abc": JSON.stringify(job()),
@@ -893,7 +893,7 @@ describe("signal light maintenance on the write side", () => {
   });
 
   it("never lets a non-terminal patch change the count", async () => {
-    const { patchJob } = await import("../src/kv_store");
+    const { patchJob } = await import("../src/services/kv");
     const { kv, store } = countingKv({
       "meta:open_count": "1",
       "job:abc": JSON.stringify(job({ status: "in_progress", run_id: 1 })),
@@ -912,7 +912,7 @@ describe("signal light maintenance on the write side", () => {
   });
 
   it("clamps at zero rather than going negative (negative would strand jobs)", async () => {
-    const { patchJob } = await import("../src/kv_store");
+    const { patchJob } = await import("../src/services/kv");
     // 信号灯已经是 0，但任务却是未完结的（状态不一致）
     const { kv, store } = countingKv({
       "meta:open_count": "0",

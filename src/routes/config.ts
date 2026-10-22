@@ -13,7 +13,7 @@
  * 处把住即可。
  */
 
-import type { ResolvedEnv } from "./config";
+import type { ResolvedEnv } from "../services/config";
 import {
   CONFIG_FIELDS,
   describeConfig,
@@ -23,8 +23,8 @@ import {
   saveConfig,
   loadConfig,
   type RelayConfig,
-} from "./config";
-import { json, timingSafeEqual } from "./http";
+} from "../services/config";
+import { json } from "../shared/http";
 
 const MAX_FIELD_LEN = 4096;
 
@@ -94,11 +94,9 @@ export async function handlePatchConfig(
    * 前端曾经的 bug 把敏感输入框清成 '' 后又判成"改过了"，于是一次
    * 手滑就把 KV 里的 GITHUB_TOKEN 删掉，之后每次构建都是 401。
    *
-   * 折衷：普通字段照旧接受空串；**敏感字段**要清必须显式带
-   * `_clear: true`，例如 {"github_token": "", "github_token_clear": true}。
-   * 这样既保留清除能力，又让误清不可能发生。
+   * 折衷：普通字段照旧接受空串；**敏感字段**要清必须显式带 clear 数组。
    */
-  const explicitClear = (body as { clear?: unknown }).clear;
+  const explicitClear = body.clear;
   const cleared = new Set<string>();
   if (Array.isArray(explicitClear)) {
     for (const k of explicitClear) {

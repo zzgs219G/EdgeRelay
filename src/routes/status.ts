@@ -4,37 +4,20 @@
  * 读 KV 为准；KV 未命中或 run_id 尚未补绑时，回查 GitHub 一次并写回。
  * 这样即使 build 接口的「同步等 run_id」超时，或 cron 尚未跑到，
  * APP 的第一次查询也能拿到真实状态——不会出现「跑完了还显示处理中」。
+ *
+ * 这是 APP 每 5 秒轮询的热路径，因此只读 KV、不打 GitHub（唯一例外是
+ * run_id 已知且未终态时的状态确认，那是必要的）。
  */
 
-import type { BuildJob, Env, JobStatus, JobStatusResponse } from "./types";
-import {
-  describeGitHubError,
-  fetchLogArtifactUrl,
-  getRun,
-  GitHubError,
-} from "./github";
-import { DEFAULT_STALL_TIMEOUT_MIN, getJob, isStalled, patchJob, toAppStatus } from "./kv_store";
-import { resolveDownloadUrl } from "./download_url";
-import { error, json } from "./router";
-
-/** 抓不到 R2 直链时的人类可读原因（写进日志，供 wrangler tail / CF 观测查看）。 */
-export function explainDownloadFailure(reason: string | null | undefined): string | null {
-  switch (reason) {
-    case "r2_public_domain_missing":
-      return "注解里的域名被 GitHub 打码成 ***，而网关未配 R2_PUBLIC_DOMAIN，无法补全 → 退回 GitHub artifact 链接（APP 无令牌，下不了）";
-    case "no_apks_url_in_annotations":
-      return "run 注解里没有 /apks/ 链接（流水线可能没喊 ::notice）→ 退回 GitHub artifact 链接";
-    case "github_error":
-      return "GitHub 调用失败（令牌或权限）";
-    case "no_artifact_either":
-      return "注解里没有 /apks/ 链接，且 run 没有可下载的 artifact";
-    default:
-      return null;
-  }
-}
+import type { BuildJob, Env, JobStatus, JobStatusResponse } from "../shared/types";
+import { isStalled, stalledMessage, toAppStatus } from "../domain/job";
+import { describeGitHubError, fetchLogArtifactUrl, getRun, GitHubError } from "../services/github";
+import { getJob, patchJob } from "../services/kv";
+import { explainDownloadFailure, resolveDownloadUrl } from "../services/download";
+import { error, json } from "../shared/http";
 
 export async function handleStatus(env: Env, jobId: string): Promise<Response> {
-  let job = await getJob(env, jobId);
+  const job = await getJob(env, jobId);
   if (!job) {
     return error(404, "not_found", `任务 ${jobId} 不存在或已过期`);
   }
@@ -55,7 +38,7 @@ export async function handleStatus(env: Env, jobId: string): Promise<Response> {
       const patch: Partial<BuildJob> = {
         status: "completed" as JobStatus,
         conclusion: "failure",
-        error: `任务超时：创建 ${DEFAULT_STALL_TIMEOUT_MIN} 分钟后仍未关联到流水线运行（可能未成功触发）`,
+        error: stalledMessage(),
       };
       const updated = await patchJob(env, jobId, patch);
       return json(toResponse(updated ?? { ...job, ...patch }));

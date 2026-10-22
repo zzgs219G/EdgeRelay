@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import worker from "../src/router";
-import type { BuildJob, Env } from "../src/types";
+import type { BuildJob, Env } from "../src/shared/types";
 
 /**
  * 用 vi.stubGlobal 拦掉 fetch，模拟 GitHub REST API。

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import worker from "../src/router";
-import type { Env } from "../src/types";
-import { invalidateConfigCache, maskSecret } from "../src/config";
-import { invalidateJobsCache } from "../src/jobs";
+import type { Env } from "../src/shared/types";
+import { invalidateConfigCache, maskSecret } from "../src/services/config";
+import { invalidateJobsCache } from "../src/services/job_list_cache";
 
 /**
  * 运行时配置：GET /api/config 与 PATCH /api/config。

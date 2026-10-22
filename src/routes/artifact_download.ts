@@ -13,9 +13,9 @@
  *
  *   也就是说：**一个网关侧能拿到的东西，因为交给浏览器直连而彻底拿不到。**
  *
- * 解法与日志下载完全同构（见 log_proxy.ts）：网关带令牌取回，再转发给已
- * 鉴权的调用方。面板走 `<a href="/api/artifact/:jobId">` 时浏览器会自动
- * 带上 session cookie，正好过路由的 checkAuth。
+ * 解法与日志下载完全同构（见 routes/log_download.ts）：网关带令牌取回，再
+ * 转发给已鉴权的调用方。面板走 `<a href="/api/artifact/:jobId">` 时浏览器
+ * 会自动带上 session cookie，正好过路由的 checkAuth。
  *
  * 为什么不再依赖 R2_PUBLIC_DOMAIN：
  *   那是「拿到 R2 直链」的前提，缺了它会一路兜底到 artifact。而这条代理
@@ -23,10 +23,10 @@
  *   但拿不到时不再是无解。
  */
 
-import type { BuildJob, Env } from "./types";
-import { getJob } from "./kv_store";
-import { LOG_ARTIFACT_NAME, listArtifacts } from "./github";
-import { error } from "./http";
+import type { Env } from "../shared/types";
+import { getJob } from "../services/kv";
+import { listArtifacts, LOG_ARTIFACT_NAME } from "../services/github";
+import { error } from "../shared/http";
 
 /** 产物上限。APK + 签名后的包可能上百 MB，给 1GB 宽限；超了说明配置有问题。 */
 const MAX_ARTIFACT_BYTES = 1024 * 1024 * 1024;
@@ -50,11 +50,7 @@ export async function handleArtifactDownload(env: Env, jobId: string): Promise<R
 
   if (!target) {
     const others = artifacts.map((a) => a.name).join(", ") || "无";
-    return error(
-      404,
-      "not_found",
-      `找不到产物 artifact。现有 artifact：${others}`,
-    );
+    return error(404, "not_found", `找不到产物 artifact。现有 artifact：${others}`);
   }
   if (target.size_in_bytes > MAX_ARTIFACT_BYTES) {
     return error(413, "bad_request", `产物文件过大（${target.size_in_bytes} 字节），拒绝转发`);
@@ -95,9 +91,4 @@ export async function handleArtifactDownload(env: Env, jobId: string): Promise<R
   headers.set("access-control-allow-origin", "*");
 
   return new Response(upstream.body, { status: 200, headers });
-}
-
-/** 供测试与内部复用：判断某任务是否可能走代理下载。 */
-export function canProxyArtifact(job: BuildJob): boolean {
-  return job.run_id !== null;
 }

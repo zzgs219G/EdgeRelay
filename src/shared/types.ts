@@ -6,15 +6,34 @@
  * 下载链接）整体搬到 Cloudflare Worker 后面。APP 只持有网关签发的 jobId，
  * 不再接触 GitHub Token 与仓库地址。
  *
- * 文件职责：
- *   types.ts             — Env / 请求 / 响应类型
- *   github.ts            — GitHub REST API 最小客户端（含 yml inputs 解析）
- *   kv_store.ts          — 任务记录的 KV 读写（含 run_id 补绑）
- *   router.ts            — fetch 入口：CORS + 鉴权 + 限流 + 路由表
- *   build.ts             — POST /api/build（dispatch + 等 run_id）
- *   status.ts            — GET  /api/status/:jobId（读 KV，缺失时回补）
- *   workflows.ts         — GET  /api/workflows（列表 + inputs 元数据）
- *   reconcile.ts         — Cron 每分钟兜底轮询在途任务
+ * 目录职责（按依赖方向分层，上层可依赖下层，反之不可）：
+ *
+ *   shared/     叶子层，零内部依赖
+ *     types.ts             — Env / 请求 / 响应类型
+ *     http.ts              — JSON / 错误 / CORS / 常量时间比较
+ *
+ *   domain/     纯逻辑，不碰网络与 KV，可直接单测
+ *     job.ts               — job_id 生成 / 状态映射 / 停滞判定
+ *
+ *   services/   业务与外部交互（GitHub / KV / R2）
+ *     github/              — GitHub REST 客户端（client / workflows / runs / artifacts）
+ *     kv/                  — 任务记录、信号灯、job_id 索引
+ *     config.ts            — 运行时配置（KV 优先，env 兜底）
+ *     download.ts          — 产物链接解析 + 兜底原因
+ *     modules.ts           — protect_config → 模块中文标签
+ *     sigv4.ts             — R2 预签名（SigV4）
+ *     job_list_cache.ts    — 面板任务列表的 isolate 短缓存
+ *     reconcile.ts         — Cron 兜底轮询
+ *
+ *   middleware/ 横切关注点
+ *     auth.ts / rate_limit.ts / health.ts
+ *
+ *   routes/     HTTP handler，一个文件一个接口族，**互不引用**
+ *     build / status / status_steps / workflows / jobs / config /
+ *     auth / r2_presign / log_download / artifact_download
+ *
+ *   router.ts   路由表与 fetch/scheduled 入口
+ *   index.ts    Wrangler 入口（只做转出）
  */
 
 /** 单个任务的持久化记录（KV value，JSON 序列化）。 */
@@ -48,7 +67,7 @@ export interface BuildJob {
   /**
    * 构建日志 artifact 的下载地址。
    * 日志是 `if: always()` 上传的，失败的任务也有——排障最需要它。
-   * 下载需 GitHub 令牌，所以面板通过网关代理下载（见 /api/log/:jobId）。
+   * 下载需 GitHub 令牌，所以面板通过网关代理下载（见 routes/log_download.ts）。
    */
   log_url?: string | null;
   /** 失败时的人类可读原因。 */

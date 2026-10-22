@@ -4,8 +4,8 @@ import {
   fetchArtifactUrl,
   fetchLogArtifactUrl,
   listArtifacts,
-} from "../src/github";
-import type { Env } from "../src/types";
+} from "../src/services/github";
+import type { Env } from "../src/shared/types";
 
 /**
  * artifact 按名字区分。

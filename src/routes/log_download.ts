@@ -11,10 +11,10 @@
  *   设计在这里没用。
  */
 
-import type { BuildJob, Env } from "./types";
-import { getJob } from "./kv_store";
-import { LOG_ARTIFACT_NAME, listArtifacts } from "./github";
-import { error } from "./http";
+import type { Env } from "../shared/types";
+import { getJob } from "../services/kv";
+import { listArtifacts, LOG_ARTIFACT_NAME } from "../services/github";
+import { error } from "../shared/http";
 
 /** 日志 artifact 不应超过这个大小；超过说明配置有问题，别整包转发。 */
 const MAX_LOG_BYTES = 20 * 1024 * 1024;
@@ -32,9 +32,7 @@ export async function handleLogDownload(env: Env, jobId: string): Promise<Respon
   // （upload-artifact 是最后一步），存在「任务已 completed 但 artifact
   // 列表还空」的时间窗。现查能覆盖这种情况。
   const artifacts = await listArtifacts(env, job.run_id);
-  const logArtifact = artifacts.find(
-    (a) => a.name === LOG_ARTIFACT_NAME && !a.expired,
-  );
+  const logArtifact = artifacts.find((a) => a.name === LOG_ARTIFACT_NAME && !a.expired);
 
   if (!logArtifact) {
     const others = artifacts.map((a) => a.name).join(", ") || "无";
@@ -86,9 +84,4 @@ export async function handleLogDownload(env: Env, jobId: string): Promise<Respon
   headers.set("access-control-allow-origin", "*");
 
   return new Response(upstream.body, { status: 200, headers });
-}
-
-/** 供测试与内部使用：判断某任务是否可能有日志。 */
-export function canHaveLog(job: BuildJob): boolean {
-  return job.run_id !== null;
 }

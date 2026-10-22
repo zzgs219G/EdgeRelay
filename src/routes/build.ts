@@ -10,20 +10,16 @@
  * run_id，取最新的一个；最多等 RUN_ID_WAIT_MS（默认 4s）。
  *
  * 若 4s 内 GitHub 仍未列出该 run，job 仍以 queued 状态返回，run_id 留空，
- * 由 status.ts 的「读缺失即回查」与 cron 兜底补绑。APP 无需特殊处理。
+ * 由 routes/status.ts 的「读缺失即回查」与 cron 兜底补绑。APP 无需特殊处理。
  */
 
-import type { BuildJob, BuildRequest, BuildResponse, Env } from "./types";
-import {
-  dispatchWorkflow,
-  describeGitHubError,
-  GitHubError,
-  listRecentRuns,
-} from "./github";
-import { newJobId, putJob, putNewJob } from "./kv_store";
-import { describeModules } from "./modules";
-import { invalidateJobsCache } from "./jobs";
-import { error, json } from "./router";
+import type { BuildJob, BuildRequest, BuildResponse, Env } from "../shared/types";
+import { newJobId } from "../domain/job";
+import { describeGitHubError, dispatchWorkflow, GitHubError, listRecentRuns } from "../services/github";
+import { putJob, putNewJob } from "../services/kv";
+import { describeModules } from "../services/modules";
+import { invalidateJobsCache } from "../services/job_list_cache";
+import { error, json } from "../shared/http";
 
 const MAX_CONFIG_BYTES = 64 * 1024;
 const MAX_URL_BYTES = 2048;
@@ -80,7 +76,7 @@ export async function handleBuild(
 
   // 先落库再触发：dispatch 失败也能在任务表里留下痕迹，便于排查。
   // 用 putNewJob 而非 putJob：它是唯一「新建任务」的语义入口，
-  // 顺带把未完结信号灯 +1（详见 kv_store.ts）。
+  // 顺带把未完结信号灯 +1（详见 services/kv/jobs.ts）。
   await putNewJob(env, job);
   // 让面板立刻看到新任务，而不是等列表缓存（15s）过期。
   invalidateJobsCache();
@@ -120,10 +116,10 @@ export async function handleBuild(
 
   // 没拿到 run_id 就不写第二次：状态仍是 queued，与落库时一致，
   // 这次写只会白耗一次 KV 写额度（免费 1000 次/天）。
-  // run_id 由 status.ts 的「读缺失即回查」与 cron 补绑，见 kv_store.ts。
+  // run_id 由 routes/status.ts 的「读缺失即回查」与 cron 补绑。
   const finalStatus = runId !== null ? "in_progress" : job.status;
   if (runId !== null) {
-    await putJobAndReturn(env, {
+    await putJob(env, {
       ...job,
       run_id: runId,
       status: finalStatus,
@@ -132,7 +128,7 @@ export async function handleBuild(
   }
 
   // 已经把状态写成 in_progress 了，这里顺手触发一次状态刷新不划算——
-  // cron 每分钟兜底 + APP 轮询 /api/status 都会推进，无需 waitUntil。
+  // cron 兜底 + APP 轮询 /api/status 都会推进，无需 waitUntil。
   void ctx;
 
   // 刻意不返回 run_id：APP 只需要 job_id，而 run_id 属于 GitHub 侧信息，
@@ -165,9 +161,9 @@ function buildDispatchInputs(body: BuildRequest): Record<string, string> {
  * 改成「预算内最多探测 N 次，间隔均分」：探测次数确定，接住 GitHub
  * 偶发延迟（run 通常 1-2 秒后才出现在列表里）的能力稳定。
  *
- * 补绑在这里做扎实， downstream 收益很大：run_id === null 的任务
+ * 补绑在这里做扎实，downstream 收益很大：run_id === null 的任务
  * 正是会让 has_active 恒 true、触发停滞判死、并让 cron 每轮白打一次
- * GitHub 的那一类（见 reconcile.ts 与 kv_store.ts 的 isStalled）。
+ * GitHub 的那一类（见 domain/job.ts 的 isStalled）。
  *
  * @param attempts 探测次数，默认 3（可经 RUN_ID_PROBE_ATTEMPTS 覆盖）
  * @returns run_id，或 null（由 cron / status 回查补上）
@@ -210,10 +206,6 @@ async function waitForRunId(
     if (wait > 0) await sleep(wait);
   }
   return null;
-}
-
-async function putJobAndReturn(env: Env, job: BuildJob): Promise<void> {
-  await putJob(env, job);
 }
 
 function sleep(ms: number): Promise<void> {

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/router";
-import type { BuildJob, Env } from "../src/types";
-import { invalidateConfigCache } from "../src/config";
-import { invalidateJobsCache } from "../src/jobs";
+import type { BuildJob, Env } from "../src/shared/types";
+import { invalidateConfigCache } from "../src/services/config";
+import { invalidateJobsCache } from "../src/services/job_list_cache";
 
 /**
  * GET /api/artifact/:jobId — 产物下载代理。

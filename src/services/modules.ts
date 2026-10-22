@@ -9,7 +9,7 @@
  * 只在 POST /api/build 时解析一次，不进任何轮询路径。
  */
 
-import type { Env } from "./types";
+import type { Env } from "../shared/types";
 
 /**
  * schema 缓存 1 小时。

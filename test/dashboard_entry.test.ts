@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import worker from "../src/router";
-import type { Env } from "../src/types";
-import { invalidateConfigCache } from "../src/config";
-import { invalidateJobsCache } from "../src/jobs";
+import type { Env } from "../src/shared/types";
+import { invalidateConfigCache } from "../src/services/config";
+import { invalidateJobsCache } from "../src/services/job_list_cache";
 
 /**
  * 复现「登录成功 → 进入控制台 → 网关内部错误」。

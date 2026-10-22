@@ -1,26 +1,15 @@
 /**
- * R2 预签名上传：POST /api/r2/presign
+ * S3 SigV4 预签名算法（AWS 兼容），纯函数，不依赖 env / Request。
  *
- * 为什么要这个接口：
- *   APP 需要直传 APK 到 R2（大文件不适合过 Worker），但 S3 上传必须用
- *   Access Key / Secret Key 做 SigV4 签名。这两个密钥原本躺在公开可下载
- *   的配置 JSON 里（AES 密码硬编码在 APP 内），等于公开泄漏。
+ * 为什么抽成纯函数：这是整条 R2 上传链路最容易出错的一环，且无法在本机
+ * 用真实 R2 验证。只有把它与 HTTP handler 解耦，才能用 AWS 官方文档的
+ * 「已知答案」做对拍测试（见 test/r2_presign.test.ts）。
  *
- *   改为：密钥只存网关，APP 向网关要一个「只能往某个 key PUT、几分钟
- *   过期」的签名 URL，拿它直传。即使这个 URL 泄漏，攻击者也只能在
- *   有效期内覆盖那一个 object，读不到任何已有文件。
- *
- * 实现：S3 SigV4 query-string 签名（AWS 兼容），用 crypto.subtle 做
- * HMAC，不引任何 S3 SDK。
- *
- * 正确性由 test/r2_presign.test.ts 用 AWS 官方示例签名值对拍保证。
+ * 用 crypto.subtle 做 HMAC，不引任何 S3 SDK。
  */
 
-import type { ResolvedEnv } from "./config";
-import { json } from "./http";
-
 /** 预签名有效期。10 分钟足够传完一个 APK，同时把泄漏窗口压到最小。 */
-const PRESIGN_TTL_SEC = 600;
+export const PRESIGN_TTL_SEC = 600;
 
 // ── SigV4 原语 ───────────────────────────────────────────────────────
 
@@ -82,7 +71,7 @@ function amzDates(now: Date): { amzDate: string; dateStamp: string } {
   return { amzDate: iso, dateStamp: iso.slice(0, 8) };
 }
 
-// ── 预签名核心（可独立测试）─────────────────────────────────────────
+// ── 预签名核心 ───────────────────────────────────────────────────────
 
 export interface PresignParams {
   method: "PUT" | "GET";
@@ -104,12 +93,7 @@ export interface PresignParams {
   pathStyle: boolean;
 }
 
-/**
- * 构造 SigV4 预签名 URL。
- *
- * 抽成纯函数（不依赖 env / Request）是为了能用 AWS 官方测试向量对拍——
- * 这是唯一能在没有真实 R2 的情况下验证算法正确性的办法。
- */
+/** 构造 SigV4 预签名 URL。 */
 export async function buildPresignedUrl(p: PresignParams): Promise<string> {
   const service = "s3";
   const host = new URL(p.endpoint).host;
@@ -196,85 +180,4 @@ export function validatePresignKey(key: string): string | null {
   if (/[\u0000-\u001f\u007f]/.test(key)) return "key 不能包含控制字符";
 
   return null;
-}
-
-// ── HTTP handler ─────────────────────────────────────────────────────
-
-export interface PresignRequest {
-  key?: string;
-  /** 预留：不参与签名，仅回显给 APP 设置 Content-Type。 */
-  content_type?: string;
-}
-
-export interface PresignResponse {
-  ok: true;
-  url: string;
-  headers: Record<string, string>;
-  public_url: string;
-  expires_at: number;
-}
-
-export async function handlePresign(
-  request: Request,
-  env: ResolvedEnv,
-): Promise<Response> {
-  const accessKey = env.R2_ACCESS_KEY_ID ?? "";
-  const secretKey = env.R2_SECRET_ACCESS_KEY ?? "";
-  const endpoint = (env.R2_ENDPOINT ?? "").trim();
-  const bucket = env.R2_BUCKET_NAME ?? "";
-
-  const missing: string[] = [];
-  if (!accessKey) missing.push("r2_access_key_id");
-  if (!secretKey) missing.push("r2_secret_access_key");
-  if (!endpoint) missing.push("r2_endpoint");
-  if (!bucket) missing.push("r2_bucket_name");
-  if (missing.length > 0) {
-    return json(
-      {
-        ok: false,
-        error: `R2 未配置，缺少：${missing.join(", ")}。在面板配置页填写即可。`,
-        missing,
-      },
-      503,
-    );
-  }
-
-  let body: PresignRequest;
-  try {
-    body = (await request.json()) as PresignRequest;
-  } catch {
-    return json({ ok: false, error: "请求体不是合法 JSON" }, 400);
-  }
-
-  const key = typeof body.key === "string" ? body.key.trim() : "";
-  const keyErr = validatePresignKey(key);
-  if (keyErr) {
-    return json({ ok: false, error: keyErr }, 400);
-  }
-
-  const now = new Date();
-  const url = await buildPresignedUrl({
-    method: "PUT",
-    accessKey,
-    secretKey,
-    endpoint,
-    bucket,
-    key,
-    region: "auto", // R2 的 S3 API 固定用 auto
-    time: now,
-    expiresSec: PRESIGN_TTL_SEC,
-    // R2 用 path 风格：https://<account>.r2.cloudflarestorage.com/<bucket>/<key>
-    pathStyle: true,
-  });
-
-  const publicDomain = (env.R2_PUBLIC_DOMAIN ?? "").trim().replace(/\/$/, "");
-  const resp: PresignResponse = {
-    ok: true,
-    url,
-    // 只签了 host，除 content-type（不参与签名）外无需额外 header。
-    headers: {},
-    public_url: publicDomain ? `${publicDomain}/${key}` : "",
-    expires_at: now.getTime() + PRESIGN_TTL_SEC * 1000,
-  };
-  return json(resp);
 }

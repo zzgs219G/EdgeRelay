@@ -9,9 +9,9 @@
  * 一次 N 次 GitHub 调用，只为渲染表单时按需开启）。
  */
 
-import type { Env, WorkflowListResponse } from "./types";
-import { fetchWorkflowInputs, listWorkflows } from "./github";
-import { error, json } from "./router";
+import type { Env, WorkflowListResponse } from "../shared/types";
+import { fetchWorkflowInputs, listWorkflows } from "../services/github";
+import { error, json } from "../shared/http";
 
 export async function handleWorkflows(env: Env, url: URL): Promise<Response> {
   const withInputs = url.searchParams.get("with_inputs") === "1";
@@ -31,7 +31,7 @@ export async function handleWorkflows(env: Env, url: URL): Promise<Response> {
     }
     const resp: WorkflowListResponse = { workflows };
     return json(resp);
-  } catch (err) {
+  } catch {
     return error(502, "upstream_error", "拉取 workflow 列表失败");
   }
 }

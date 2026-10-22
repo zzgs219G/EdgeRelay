@@ -1,35 +1,36 @@
 /**
- * Worker fetch 入口：CORS → 鉴权 → 限流 → 路由表。
+ * Worker fetch 入口：CORS → 静态资源 → 配置合并 → 鉴权 → 限流 → 路由表。
  *
- * 鉴权：除 OPTIONS 与 GET /health 外，所有路径要求
- *   Authorization: Bearer <RELAY_TOKEN>
+ * 鉴权：除 OPTIONS 与 GET /health 外，所有 /api/* 路径要求
+ *   Authorization: Bearer <RELAY_TOKEN> 或 session cookie
  * 令牌只存在于 Worker secret，APP 从不下发 GitHub Token。
+ *
+ * 本文件刻意保持"薄"：只做分发，任何业务逻辑都下沉到 routes/ 与
+ * services/。这样加一个接口 = 加一个 routes/xxx.ts + 这里一行 case，
+ * 两边都不会膨胀。
  */
 
-import type { Env, ErrorCode, ErrorResponse } from "./types";
-import { handleBuild } from "./build";
-import { handleStatus } from "./status";
-import { handleWorkflows } from "./workflows";
-import { reconcileOpenJobs } from "./reconcile";
-import {
-  handleLogin,
-  handleLogout,
-  handleSession,
-  hasValidSession,
-  readCookie,
-  SESSION_COOKIE_NAME,
-} from "./ui";
-import { handleListJobs } from "./jobs";
-import { handleGetConfig, handlePatchConfig } from "./config_api";
-import { handlePresign } from "./r2_presign";
-import { handleStatusSteps } from "./status_steps";
-import { handleLogDownload } from "./log_proxy";
-import { handleArtifactDownload } from "./artifact_proxy";
-import { loadConfig, resolveEnv, type ResolvedEnv } from "./config";
-import { corsHeaders, error, json, timingSafeEqual, withCors } from "./http";
+import type { Env } from "./shared/types";
+import { resolveEnv, type ResolvedEnv } from "./services/config";
+import { reconcileOpenJobs } from "./services/reconcile";
+import { checkAuth } from "./middleware/auth";
+import { checkRateLimit } from "./middleware/rate_limit";
+import { healthCheck } from "./middleware/health";
+import { error, json, withCors } from "./shared/http";
+
+import { handleBuild } from "./routes/build";
+import { handleStatus } from "./routes/status";
+import { handleStatusSteps } from "./routes/status_steps";
+import { handleWorkflows } from "./routes/workflows";
+import { handleListJobs } from "./routes/jobs";
+import { handleGetConfig, handlePatchConfig } from "./routes/config";
+import { handleLogin, handleLogout, handleSession } from "./routes/auth";
+import { handlePresign } from "./routes/r2_presign";
+import { handleLogDownload } from "./routes/log_download";
+import { handleArtifactDownload } from "./routes/artifact_download";
 
 // 历史上其他模块从 router 引这两个，保留 re-export 以免改动扩散。
-export { json, error, corsHeaders };
+export { json, error };
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -42,16 +43,11 @@ export default {
 
     // 健康检查：不鉴权、不计流，供 CF 探活。
     //
-    // 必须做真实探测，不能只回 ok:true —— 否则 KV 未绑 / namespace id
-    // 填错时，/health 是全绿的，而每个真实请求才在 KV 上炸掉，排障时
-    // 会被"健康检查明明正常"误导。
-    //
     // 注意这里用原始 env 而非合并后的配置：healthCheck 自己已经要读写
     // KV 探针，再叠加一次 resolveEnv 就是两次 KV 读，纯浪费。
     if (url.pathname === "/health" && request.method === "GET") {
       return await healthCheck(env);
     }
-
 
     // 静态资源（SPA 的 js/css/字体、以及任意前端路由）不需要任何后端
     // 配置——直接交给 assets，连 KV 都不碰。这是最常见的一类请求，
@@ -88,7 +84,7 @@ export default {
       return await handleSession(request, cfg);
     }
 
-    // 鉴权 —— 只拦 /api/。
+    // 鉴权与限流 —— 只拦 /api/。
     //
     // deliberately 不做成全局前置：RELAY_TOKEN / RELAY_PASSWORD 是后端
     // secret，与"浏览器能否打开页面"无关。全局拦会把 / 这种本该返回
@@ -97,7 +93,6 @@ export default {
       const authErr = await checkAuth(request, cfg);
       if (authErr) return authErr;
 
-      // 限流同样只作用于 API。
       const rlErr = checkRateLimit(request, cfg);
       if (rlErr) return rlErr;
     }
@@ -188,15 +183,12 @@ export default {
       // 安全性：能走到这里的请求都已通过 checkAuth（Bearer 或 session），
       // 把异常消息回给已授权的调用方不构成泄漏。而 `detail` 只含错误
       // 消息、不含堆栈与请求内容。
-      //
-      // 带上了调用方才拿得到 `err.stack` 之外的第一手信息，这也是
-      // dashboard_entry.test.ts 盯的场景。
       return error(500, "internal_error", `网关内部错误：${detail}`);
     }
   },
 
   /**
-   * Cron 兜底：每 2 分钟轮询未完结任务。
+   * Cron 兜底：轮询未完结任务。
    *
    * APP 轮询 /api/status 只读 KV，真正的 GitHub 调用集中在这里，
    * 把 GitHub API 消耗压到与任务数无关的固定节奏上。
@@ -214,201 +206,3 @@ export default {
     }
   },
 };
-
-// ── 鉴权 ─────────────────────────────────────────────────────────────
-
-/**
- * /api/* 鉴权：两条通道，任一通过即可。
- *
- *   1. Bearer <RELAY_TOKEN>            —— APP / 脚本等机器调用方
- *   2. session cookie (relay_session)  —— 浏览器里的管理面板
- *
- * 浏览器那条通道让 Vue 前端不必自己存令牌：cookie 是 HttpOnly 的，
- * 前端 JS 读不到，XSS 也偷不走；服务端旋转 RELAY_TOKEN 即可全部作废。
- */
-async function checkAuth(request: Request, env: ResolvedEnv): Promise<Response | null> {
-  // 双通道令牌：KV 里配置的（面板可改）与 CF secret 里的同时有效。
-  // 迁移期新旧令牌并存，换令牌时不会让正在跑的 APP 立刻断掉。
-  const tokens = [env.RELAY_TOKEN, env.RAW_RELAY_TOKEN].filter(
-    (v): v is string => typeof v === "string" && v.length > 0,
-  );
-
-  const header = request.headers.get("authorization") ?? "";
-  const bearer = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-
-  if (bearer) {
-    let ok = false;
-    for (const t of tokens) {
-      if (timingSafeEqual(bearer, t)) ok = true;
-    }
-    if (ok) return null;
-  }
-
-  // 面板会话（浏览器）不需要 token 也能过——只要登录过。
-  if (await hasValidSession(request, env)) return null;
-
-  if (tokens.length === 0) {
-    return error(500, "internal_error", "RELAY_TOKEN 未配置");
-  }
-  return error(401, "unauthorized", "无效或缺失的 Bearer 令牌 / 会话");
-}
-
-// ── 限流 ─────────────────────────────────────────────────────────────
-
-interface Bucket {
-  tokens: number;
-  updated_at: number;
-}
-
-const buckets = new Map<string, Bucket>();
-const BUCKET_TTL_MS = 10 * 60 * 1000;
-
-/**
- * per-token 令牌桶。状态在 Worker isolate 内，冷启动重置——
- * 定位为防突发滥用，不是严格 SLO。
- */
-function checkRateLimit(request: Request, env: Env): Response | null {
-  const cap = Number.parseInt(env.RATE_LIMIT_PER_MIN ?? "120", 10);
-  if (!Number.isFinite(cap) || cap <= 0) return null;
-
-  // 限流 key 必须能区分调用方，否则所有人共用一个桶。
-  //
-  // 这里踩过坑：原实现取 authorization 头，`header.slice(7).trim()` 对
-  // 没有 "Bearer " 前缀的值会直接截断成垃圾串；而面板请求根本带 cookie
-  // 不带这个头，于是所有面板流量都落进同一个 "anonymous" 桶，两个浏览器
-  // 加起来 120 次/分钟就互相限流。
-  //
-  // 现在的 key 优先级：Bearer 令牌 > session cookie > 连接 IP。
-  const header = request.headers.get("authorization") ?? "";
-  const bearer = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-  const session = readCookie(request, SESSION_COOKIE_NAME);
-  const ip = request.headers.get("cf-connecting-ip") ?? "";
-  const token = bearer || session || ip || "anonymous";
-  const now = Date.now();
-
-  let bucket = buckets.get(token);
-  if (!bucket || now - bucket.updated_at > BUCKET_TTL_MS) {
-    bucket = { tokens: cap, updated_at: now };
-    buckets.set(token, bucket);
-  }
-
-  // 按时间补充令牌。
-  const elapsedMin = (now - bucket.updated_at) / 60_000;
-  bucket.tokens = Math.min(cap, bucket.tokens + elapsedMin * cap);
-  bucket.updated_at = now;
-
-  if (bucket.tokens < 1) {
-    const retryAfterSec = Math.ceil((1 - bucket.tokens) / (cap / 60));
-    return new Response(
-      JSON.stringify({
-        success: false,
-        error: `请求过于频繁，请 ${retryAfterSec}s 后重试`,
-        code: "rate_limited",
-      } satisfies ErrorResponse),
-      {
-        status: 429,
-        headers: {
-          "content-type": "application/json",
-          "retry-after": String(retryAfterSec),
-          ...corsHeaders(),
-        },
-      },
-    );
-  }
-
-  bucket.tokens -= 1;
-  // 顺手清理过期桶，防内存无限增长。
-  if (buckets.size > 512) {
-    for (const [k, v] of buckets) {
-      if (now - v.updated_at > BUCKET_TTL_MS) buckets.delete(k);
-    }
-  }
-  return null;
-}
-
-// ── 工具 ─────────────────────────────────────────────────────────────
-
-/**
- * 真实健康检查：探测 KV 读写 + 报告缺失的配置。
- *
- * 分别用 200（健康）与 503（不健康）表达，让 CF 探活与人工排障都能
- * 一眼看出问题，而不是拿到一个恒为 true 的 ok 字段。
- */
-/**
- * 健康检查。
- *
- * 判断标准 = 「管理面板与构建接口能不能正常用」，而不是「所有 secret 都配了」。
- *
- * 曾经把 RELAY_TOKEN 列为必填，导致一个自相矛盾的体验：文档说"接 APP
- * 时才需要 RELAY_TOKEN"，但前台一直显示"后端未就绪"——因为健康检查
- * 把它当硬性条件。RELAY_TOKEN 只影响 APP 的 Bearer 鉴权，面板用
- * session cookie，不受影响。
- *
- * 现在的分级：
- *   fatal  （503）：KV 不可用 —— 面板和所有接口都会挂
- *   degraded（200）：缺 GITHUB_TOKEN 等 —— 面板能进，但构建会失败，
- *                    用 warnings 告诉操作者哪部分不可用
- */
-async function healthCheck(env: Env): Promise<Response> {
-  const problems: string[] = [];
-  const missing: string[] = [];
-  const warnings: string[] = [];
-
-  // 判断"配没配"必须用合并后的配置：用户在面板里填了 GitHub Token 但
-  // 没在 CF 里设 secret，光看 env 会误报缺失。
-  // loadConfig 有 30s isolate 缓存，与下面的 KV 探针不冲突。
-  const kvCfg = await loadConfig(env);
-  const hasToken = Boolean(kvCfg.github_token || env.GITHUB_TOKEN);
-  const hasOwner = Boolean(kvCfg.github_owner || env.GITHUB_OWNER);
-  const hasRepo = Boolean(kvCfg.github_repo || env.GITHUB_REPO);
-  const hasRelayToken = Boolean(kvCfg.relay_token || env.RELAY_TOKEN);
-
-  // ── 致命：KV 不可用则整个网关无法工作 ──
-  let kvOk = false;
-  try {
-    if (!env.EDGE_RELAY_KV) {
-      problems.push("EDGE_RELAY_KV 未绑定（wrangler.toml 的 [[kv_namespaces]]）");
-    } else {
-      const probeKey = "health:probe";
-      await env.EDGE_RELAY_KV.put(probeKey, String(Date.now()), { expirationTtl: 60 });
-      const back = await env.EDGE_RELAY_KV.get(probeKey);
-      kvOk = back !== null;
-      if (!kvOk) problems.push("EDGE_RELAY_KV 写入后读回为空");
-    }
-  } catch (err) {
-    problems.push(
-      `EDGE_RELAY_KV 不可用: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-
-  // ── 非致命：缺失只会让部分功能不可用，不该挡住面板 ──
-  if (!hasToken) missing.push("GITHUB_TOKEN");
-  if (!hasOwner) missing.push("GITHUB_OWNER");
-  if (!hasRepo) missing.push("GITHUB_REPO");
-
-  if (missing.length > 0) {
-    warnings.push(`构建接口不可用（/api/workflows、/api/build 会失败）：缺 ${missing.join(", ")}`);
-  }
-  // RELAY_TOKEN 缺失只影响 APP，明确说出来而不是算作故障
-  if (!hasRelayToken) {
-    warnings.push("RELAY_TOKEN 未配置：APP 无法调用 /api/*（面板不受影响）");
-  }
-
-  const healthy = kvOk;
-  return json(
-    {
-      ok: healthy,
-      service: "edge-relay",
-      server_time: Date.now(),
-      kv: kvOk ? "ok" : "error",
-      // missing 保留给"会导致构建失败"的项，语义与 warnings 一致
-      missing,
-      problems,
-      warnings,
-    },
-    healthy ? 200 : 503,
-  );
-}
-
-
-// json / error / corsHeaders / withCors / timingSafeEqual 见 http.ts

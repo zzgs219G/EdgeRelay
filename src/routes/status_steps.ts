@@ -10,10 +10,10 @@
  * 做无谓的字段映射。
  */
 
-import type { BuildJob, Env } from "./types";
-import { getJob } from "./kv_store";
-import { getRunSteps } from "./github";
-import { error, json } from "./http";
+import type { Env } from "../shared/types";
+import { getJob } from "../services/kv";
+import { getRunSteps } from "../services/github";
+import { error, json } from "../shared/http";
 
 export async function handleStatusSteps(env: Env, jobId: string): Promise<Response> {
   const job = await getJob(env, jobId);
@@ -26,7 +26,8 @@ export async function handleStatusSteps(env: Env, jobId: string): Promise<Respon
     return json({
       job_id: job.job_id,
       status: job.status,
-      app_status: job.conclusion === "success" ? "SUCCESS" : job.status === "queued" ? "PENDING" : "PROCESSING",
+      app_status:
+        job.conclusion === "success" ? "SUCCESS" : job.status === "queued" ? "PENDING" : "PROCESSING",
       available: false,
       jobs: [],
       reason: "任务尚未关联到流水线运行",
@@ -58,6 +59,3 @@ export async function handleStatusSteps(env: Env, jobId: string): Promise<Respon
     );
   }
 }
-
-/** 供测试与内部复用。 */
-export type { BuildJob };

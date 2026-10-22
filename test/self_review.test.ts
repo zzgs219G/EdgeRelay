@@ -1,8 +1,8 @@
 import { vi } from "vitest";
 import { describe, expect, it } from "vitest";
-import { listRecentRuns, listWorkflows } from "../src/github";
-import { newJobId } from "../src/kv_store";
-import type { Env } from "../src/types";
+import { listRecentRuns, listWorkflows } from "../src/services/github";
+import { newJobId } from "../src/domain/job";
+import type { Env } from "../src/shared/types";
 
 /**
  * 自查发现的 bug 的回归测试。

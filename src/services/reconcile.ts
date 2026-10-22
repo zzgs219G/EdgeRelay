@@ -6,11 +6,12 @@
  *   2. 给 in_progress 的任务刷新状态，完成时抓下载链接；
  *   3. 清理超过保留期的死任务（KV TTL 已负责大部分，这里只补漏）。
  *
- * 每轮 GitHub 调用次数 ≈ 未完结任务数 × 1~3，被 crons 的 1 分钟节奏
+ * 每轮 GitHub 调用次数 ≈ 未完结任务数 × 1~3，被 crons 的 2 分钟节奏
  * 天然限速。APP 轮询只读 KV，不再消耗 GitHub 配额。
  */
 
-import type { BuildJob, Env } from "./types";
+import type { BuildJob, Env } from "../shared/types";
+import { isStalled, stalledMessage } from "../domain/job";
 import {
   describeGitHubError,
   fetchLogArtifactUrl,
@@ -18,18 +19,15 @@ import {
   GitHubError,
   listRecentRuns,
 } from "./github";
-import { resolveDownloadUrl } from "./download_url";
-import { explainDownloadFailure } from "./status";
+import { explainDownloadFailure, resolveDownloadUrl } from "./download";
 import {
-  DEFAULT_STALL_TIMEOUT_MIN,
-  isStalled,
   listOpenJobs,
   markSignalLightReconciled,
   patchJob,
   readOpenCount,
   reconcileSignalLight,
   shouldReconcileSignalLight,
-} from "./kv_store";
+} from "./kv";
 
 /** 单轮最多处理的任务数，防一次 cron 跑爆 GitHub 配额。 */
 const MAX_JOBS_PER_TICK = 40;
@@ -37,13 +35,12 @@ const MAX_JOBS_PER_TICK = 40;
 /**
  * 在途任务列表的 isolate 级缓存。
  *
- * 为什么必须有：cron 每分钟一轮，每轮必调 listOpenJobs → 1 次 KV list
+ * 为什么必须有：cron 每 2 分钟一轮，每轮必调 listOpenJobs → 1 次 KV list
  * + 未完结任务数个 get。而 KV list 的免费额度是 1000 次/天，
- * 1440 分钟/天 = 1440 次 list，光 cron 就超额 44%（且这与人有没有
- * 开着面板无关，是纯底噪）。
+ * 720 分钟/天，不加缓存约 720 次 list（且这与人有没有开着面板无关，
+ * 是纯底噪）。
  *
- * 120 秒 TTL = 每两轮 cron 命中一次缓存，list 降到约 720 次/天，
- * 留出 28% 余量给面板列表（jobs.ts 的 15s 缓存之外）。
+ * 120 秒 TTL = 每两轮 cron 命中一次缓存，list 减半到约 360 次/天。
  * 代价是补绑 run_id 最多晚 2 分钟——build.ts 的 waitForRunId 已经
  * 同步补过一次，cron 只是兜底，可接受。
  */
@@ -59,8 +56,7 @@ let openJobsCache: OpenJobsCache | null = null;
 /**
  * 拉未完结任务（带缓存）。
  *
- * 供 cron 与其它内部路径复用；缓存只在本模块内，不跨模块共享，
- * 避免 jobs.ts 的面板缓存与这里的 cron 缓存互相干扰。
+ * 缓存只在本模块内，不跨模块共享，避免与面板列表缓存（15s）互相干扰。
  */
 export async function listOpenJobsCached(env: Env): Promise<BuildJob[]> {
   const now = Date.now();
@@ -88,18 +84,18 @@ async function killStalled(env: Env, job: BuildJob): Promise<void> {
   await patchJob(env, job.job_id, {
     status: "completed",
     conclusion: "failure",
-    error: `任务超时：创建 ${DEFAULT_STALL_TIMEOUT_MIN} 分钟后仍未关联到流水线运行（可能未成功触发）`,
+    error: stalledMessage(),
   });
 }
 
 export async function reconcileOpenJobs(env: Env): Promise<{ processed: number }> {
   // ── 第一道闸：信号灯 ──
   //
-  // KV list 额度 1000 次/天，而 cron 每分钟醒一次。原实现每轮都 list，
-  // 加 120s 缓存也还有约 720 次/天，且空闲时照跑——而这个网关一天只有
+  // KV list 额度 1000 次/天，而 cron 定期醒。原实现每轮都 list，
+  // 加 120s 缓存也还有约 360 次/天，且空闲时照跑——而这个网关一天只有
   // 几个构建、每次几分钟，绝大部分 list 是白花的。
   //
-  // 现在先花 1 次 get 看信号灯（get 额度 10 万/天，1440 次只占 1.4%）：
+  // 现在先花 1 次 get 看信号灯（get 额度 10 万/天，720 次只占 0.7%）：
   //   0       → 没有未完结任务，直接睡，一次 list 都不做
   //   > 0     → 有活，才往下走
   //   null    → 读不到/没写过。保守当作「可能有任务」，继续往下。
@@ -181,8 +177,8 @@ async function tryBindRunId(env: Env, job: BuildJob): Promise<void> {
 /**
  * in_progress 任务：刷新状态，完成时抓下载链接。
  *
- * 明确不写「状态没变」的情况。理由同 status.ts：`patchJob` 无条件刷新
- * `updated_at_ms`，而该字段不出现在任何响应体里，唯一读者是节流逻辑
+ * 明确不写「状态没变」的情况。理由见 routes/status.ts：`patchJob` 无条件
+ * 刷新 `updated_at_ms`，而该字段不出现在任何响应体里，唯一读者是节流逻辑
  * 自己。cron 每 2 分钟处理一轮（list 有 120s 缓存），若每轮都写，
  * 一个 40 分钟的构建就是 20 次无变化写；叠加 APP 轮询路径的同类写，
  * KV 写额度（1000 次/天）只够十几个任务。

@@ -17,7 +17,7 @@
  *   - 敏感字段永不回显明文：GET /api/config 只返回 has_value + 遮蔽值。
  */
 
-import type { Env } from "./types";
+import type { Env } from "../shared/types";
 
 /** KV 中存放配置的键。带版本号便于将来迁移结构。 */
 const CONFIG_KEY = "config:v1";

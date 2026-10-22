@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseDispatchInputs } from "../src/github";
+import { parseDispatchInputs } from "../src/services/github";
 
 /**
  * 与 jian_box GitHubDispatcher.parseDispatchInputs 的现有行为对齐。
