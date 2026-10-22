@@ -166,3 +166,54 @@ R2_PUBLIC_DOMAIN = "https://r2.614118.xyz"
 # Secrets（wrangler secret put 设置，绝不进 git / 前端）：
 #   GITHUB_TOKEN      — apk-protect-action 的 Actions:Read+Write 令牌
 #   RELAY_TOKEN       — 网关调用方令牌（APP 与后台面板共用）
+
+# ── Previews：分支隔离环境（wrangler 4.135+ 的 `wrangler preview`）─────
+#
+# 为什么需要这一块：一旦开启 Workers Builds 的「预览分支构建」，非生产
+# 分支（如 dev）的 push 会执行 Preview command，默认值 `npx wrangler preview`。
+# 而 Previews **不继承生产配置**（官方原文：Previews do not inherit
+# production settings），绑定必须在这里单独声明，否则 Preview 起来后
+# 所有 KV 操作为 undefined，网关一请求就炸。
+#
+# 顶层哪些设置会被继承（不用在这里重复）：
+#   assets / compatibility_date / compatibility_flags —— 见官方配置表
+# 所以 [assets] 与 compat 仍留在顶层，此处不抄一遍。
+#
+# 已踩过的坑（docs/报错.md 2026-10-22T23:38 那条）：
+#   当时 wrangler 锁在 ^3.90.0 → 实际装 3.114.17，而 `wrangler preview`
+#   在 3.x 里是个只会 throw DeprecationError 的桩（cli.js:121161）：
+#     ✘ [ERROR] Deprecation: The `wrangler preview` command has been deprecated.
+#     Failed: error occurred while running deploy command
+#   同一个命令名在 4.135.0+ 才是「分支预览」功能。因此 package.json 的
+#   wrangler 必须 >= 4.135.0，否则这里配了也没用（命令根本执行不到）。
+#
+# KV 绑定的两种选择：
+#   1. 指向**独立的 preview namespace**（推荐）——预览写入不污染生产
+#      任务表，也不会打乱生产 meta:open_count 信号灯；
+#   2. 留空不写 —— Preview 起得来，但一碰 KV 就 500。
+# 当前选择 1。创建（在 PC 上跑，本机跑不了 wrangler）：
+#   npx wrangler kv namespace create EDGE_RELAY_KV_PREVIEW
+# 把输出 id 填到下面的 [[previews.kv_namespaces]]。
+#
+# 为什么下面暂时指向生产 id 而不是留占位符：
+#   wrangler 遇到非法 namespace id 会在部署阶段直接失败（code 10042），
+#   而预览构建失败比「预览与生产共用 KV」更难排查。先用生产 id 让预览
+#   能跑起来，等你建好 preview namespace 再替换——替换前请知悉：
+#   预览分支上的构建任务会写进生产的任务表。
+[previews]
+
+[previews.vars]
+# 预览用独立标记，便于在日志/观测里区分请求来源。
+ENVIRONMENT = "preview"
+GITHUB_REF = "main"
+GITHUB_OWNER = "zzgs219G"
+GITHUB_REPO = "apk-protect-action"
+RATE_LIMIT_PER_MIN = "120"
+JOB_RETENTION_DAYS = "7"
+RUN_ID_WAIT_MS = "4000"
+R2_PUBLIC_DOMAIN = "https://r2.614118.xyz"
+
+# 预览的 KV：暂指向生产 namespace。建好独立 namespace 后把 id 换掉即可。
+[[previews.kv_namespaces]]
+binding = "EDGE_RELAY_KV"
+id = "adb7121cfadd49a3b7fd6c0e20d1f720"

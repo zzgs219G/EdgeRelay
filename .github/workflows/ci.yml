@@ -20,7 +20,7 @@ name: EdgeRelay CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -58,6 +58,12 @@ jobs:
       # 提前构建一次，确保 Vue 源码编译得过。
       - name: 构建前端
         run: npm --prefix frontend run build
+
+      # 预览配置自检：预览构建只在 CF 侧跑，本机无法验证。
+      # wrangler 锁在 3.x 时 `wrangler preview` 只是个抛异常的桩，
+      # 预览构建必然失败（见 docs/报错.md）。这条把它挡在 push 前。
+      - name: 预览配置自检
+        run: node scripts/check-preview-config.mjs
 
       # frontend/dist 提交在 git 里（CF Build command 可能没填，靠它兜底）。
       # 校验它与源码同步：改了 Vue 却忘了重新 build，会让 CF 静默部署

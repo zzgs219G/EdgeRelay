@@ -28,3 +28,6 @@ dist/
 *.class
 *.apk
 *.ipa
+# 备份与临时校验产物
+.bak/
+frontend/.dist-check/
