@@ -13,3 +13,18 @@ dist/
 
 # 构建期生成（scripts/patch-remixicon.mjs 产出）
 frontend/src/generated/
+
+build/
+.gradle/
+.idea/
+local.properties
+*.log
+.DS_Store
+__pycache__/
+*.pyc
+node_modules/
+dist/
+.env
+*.class
+*.apk
+*.ipa
