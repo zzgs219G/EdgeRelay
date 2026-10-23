@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores'
 import Login from '../views/Login.vue'
 import Dashboard from '../views/Dashboard.vue'
+import JobDetail from '../views/JobDetail.vue'
 import Config from '../views/Config.vue'
 
 const routes = [
@@ -15,6 +16,14 @@ const routes = [
     path: '/dashboard',
     name: 'dashboard',
     component: Dashboard,
+    meta: { auth: true },
+  },
+  {
+    // 任务详情 + 步骤明细。放在 /config 之前无所谓，vue-router 按
+    // 声明顺序匹配，但 /jobs/:jobId 与 /config 无重叠前缀。
+    path: '/jobs/:jobId',
+    name: 'job-detail',
+    component: JobDetail,
     meta: { auth: true },
   },
   {

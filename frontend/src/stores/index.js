@@ -70,14 +70,10 @@ export const useAuthStore = defineStore('auth', () => {
 export const useJobStore = defineStore('job', () => {
   const jobs = ref([])
   const loading = ref(false)
-  const workflows = ref([])
-  const submitting = ref(false)
   /** 是否存在未完结任务，决定前端要不要继续轮询 */
   const hasActive = ref(false)
   /** 后端的降级提示（如 KV list 额度用尽）。非错误，但空列表需解释 */
   const notice = ref('')
-  /** 额度用量（GET /api/usage）。null = 尚未加载。 */
-  const usage = ref(null)
 
   /**
    * 拉任务列表。
@@ -115,45 +111,20 @@ export const useJobStore = defineStore('job', () => {
   }
 
   /**
-   * 拉额度用量。
+   * 拉某个任务的步骤明细。
    *
-   * 失败不弹 toast：额度面板是辅助信息，不该因为它挂掉就打断用户。
-   * 保留上一次的值（若从未成功则为 null，界面显示占位）。
+   * 只在详情页打开时调用——它会打两次 GitHub（jobs + steps），
+   * 不能跟着列表轮询走。
+   *
+   * 失败不弹 toast 也不清空：服务端已把「run_id 还没绑上」「GitHub 抖动」
+   * 都降级成 200 + available:false + reason，真正抛错才是异常情况。
    */
-  async function loadUsage() {
-    try {
-      usage.value = await api.usage()
-    } catch {
-      // 静默失败，保持旧值
-    }
-  }
-
-  async function loadWorkflows() {
-    try {
-      const d = await api.workflows(true)
-      workflows.value = d.workflows || []
-    } catch {
-      workflows.value = []
-    }
-  }
-
-  async function submit(payload) {
-    submitting.value = true
-    try {
-      const d = await api.build(payload)
-      ElMessage.success(`已发起构建：${d.job_id.slice(0, 8)}`)
-      await loadJobs()
-      return d
-    } catch (e) {
-      ElMessage.error(e.message || '发起构建失败')
-      return null
-    } finally {
-      submitting.value = false
-    }
+  async function loadSteps(jobId) {
+    return api.statusSteps(jobId)
   }
 
   return {
-    jobs, loading, workflows, submitting, hasActive, notice, usage,
-    loadJobs, loadWorkflows, loadUsage, submit,
+    jobs, loading, hasActive, notice,
+    loadJobs, loadSteps,
   }
 })

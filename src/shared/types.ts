@@ -211,14 +211,4 @@ export interface Env {
    * 保留开关是为了排查「run_id 到底绑上没有」，也让原有测试语义不变。
    */
   BUILD_SYNC_RUN_ID?: string;
-  /**
-   * Cloudflare API Token，用于查询 Workers 请求数（GraphQL Analytics）。
-   *
-   * 权限要求：Account → Account Analytics → Read。
-   * 不配也不影响主功能——GET /api/usage 会返回 workers.requests = null，
-   * 面板显示"未接入"，而不是编造一个 0。
-   */
-  CF_API_TOKEN?: string;
-  /** Cloudflare Account ID（32 位十六进制），与 CF_API_TOKEN 配对使用。 */
-  CF_ACCOUNT_ID?: string;
 }
