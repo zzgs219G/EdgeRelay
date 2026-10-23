@@ -83,6 +83,18 @@ export const api = {
     return request(`/api/jobs?limit=${limit}`)
   },
 
+  /**
+   * 额度用量（KV 读/写/list、Workers 请求数、构建统计）。
+   *
+   * 数据来源分两类，前端必须区别展示：
+   *   - kv：网关自己记账（Cloudflare 无 KV 用量 API）
+   *   - workers：GraphQL Analytics，未配 token 时为 null
+   * 拿 null 时要显示"未接入"，绝不显示 0。
+   */
+  usage() {
+    return request('/api/usage')
+  },
+
   /** 运行时配置。敏感字段返回明文 + 掩码（掩码仅供摘要卡片展示）。 */
   getConfig() {
     return request('/api/config')

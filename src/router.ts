@@ -15,6 +15,7 @@ import { resolveEnv, type ResolvedEnv } from "./services/config";
 import { reconcileOpenJobs } from "./services/reconcile";
 import { authenticate } from "./middleware/auth";
 import { PANEL_OWNER, type Principal } from "./services/principal";
+import { wrapKvWithCounter } from "./services/usage";
 import { checkRateLimit } from "./middleware/rate_limit";
 import { healthCheck } from "./middleware/health";
 import { error, json, withCors } from "./shared/http";
@@ -29,6 +30,7 @@ import { handleLogin, handleLogout, handleSession } from "./routes/auth";
 import { handlePresign } from "./routes/r2_presign";
 import { handleLogDownload } from "./routes/log_download";
 import { handleArtifactDownload } from "./routes/artifact_download";
+import { handleUsage } from "./routes/usage";
 
 // 历史上其他模块从 router 引这两个，保留 re-export 以免改动扩散。
 export { json, error };
@@ -68,7 +70,13 @@ export default {
     // 到这里才需要运行时配置（/login、/api/*）。
     // 把 KV 里的值合并进 env 供后续 handler 使用，各处仍照旧读
     // env.GITHUB_TOKEN 等，无需改动。
-    const cfg: ResolvedEnv = await resolveEnv(env);
+    const rawKv = env.EDGE_RELAY_KV;
+    // 把 KV 包一层用量计数代理：所有经 env.EDGE_RELAY_KV 的操作都会被
+    // 记账（19 个调用点一行不用改）。rawKv 保留给用量模块自己落盘，
+    // 避免"统计本身消耗额度"的自我放大。
+    const cfg: ResolvedEnv = await resolveEnv(
+      env.EDGE_RELAY_KV ? { ...env, EDGE_RELAY_KV: wrapKvWithCounter(env.EDGE_RELAY_KV) } : env,
+    );
 
     // 登录 / 登出 / 会话探测：纯 JSON，不鉴权（它们就是鉴权的一部分）。
     //
@@ -154,6 +162,10 @@ export default {
         // ── R2 预签名：APP 拿签名 URL 直传，密钥不出网关 ──
         case url.pathname === "/api/r2/presign" && request.method === "POST":
           return await handlePresign(request, cfg);
+
+        // ── 额度仪表盘：KV 用量自己记账，Workers 请求数可选接 GraphQL ──
+        case url.pathname === "/api/usage" && request.method === "GET":
+          return await handleUsage(cfg, rawKv);
 
         // ── 运行时配置：面板 UI 直接改，不必回 Cloudflare 控制台 ──
         case url.pathname === "/api/config" && request.method === "GET":

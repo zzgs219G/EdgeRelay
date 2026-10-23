@@ -76,6 +76,8 @@ export const useJobStore = defineStore('job', () => {
   const hasActive = ref(false)
   /** 后端的降级提示（如 KV list 额度用尽）。非错误，但空列表需解释 */
   const notice = ref('')
+  /** 额度用量（GET /api/usage）。null = 尚未加载。 */
+  const usage = ref(null)
 
   /**
    * 拉任务列表。
@@ -112,6 +114,20 @@ export const useJobStore = defineStore('job', () => {
     }
   }
 
+  /**
+   * 拉额度用量。
+   *
+   * 失败不弹 toast：额度面板是辅助信息，不该因为它挂掉就打断用户。
+   * 保留上一次的值（若从未成功则为 null，界面显示占位）。
+   */
+  async function loadUsage() {
+    try {
+      usage.value = await api.usage()
+    } catch {
+      // 静默失败，保持旧值
+    }
+  }
+
   async function loadWorkflows() {
     try {
       const d = await api.workflows(true)
@@ -136,5 +152,8 @@ export const useJobStore = defineStore('job', () => {
     }
   }
 
-  return { jobs, loading, workflows, submitting, hasActive, notice, loadJobs, loadWorkflows, submit }
+  return {
+    jobs, loading, workflows, submitting, hasActive, notice, usage,
+    loadJobs, loadWorkflows, loadUsage, submit,
+  }
 })

@@ -251,6 +251,8 @@ const form = reactive({
   rate_limit_per_min: 120,
   job_retention_days: 7,
   run_id_wait_ms: 4000,
+  cf_api_token: '',
+  cf_account_id: '',
 })
 
 let baseline = null
@@ -306,6 +308,31 @@ const CARDS = [
         key: 'r2_public_domain', label: '公开域名', optional: true,
         placeholder: 'https://r2.example.com',
         hint: '用于拼产物下载链接。留空时只能退回 GitHub artifact，而 APP 已无令牌',
+      },
+    ],
+  },
+  {
+    key: 'analytics',
+    title: '用量监控（可选）',
+    icon: 'ri-line-chart-line',
+    tone: 'tone-blue',
+    desc:
+      '仪表盘的「Workers 请求数」需要 Cloudflare API Token 才能读。KV 用量由网关自己记账，无需此项。',
+    fields: [
+      {
+        key: 'cf_api_token',
+        label: 'Cloudflare API Token',
+        secret: true,
+        optional: true,
+        placeholder: '权限：Account → Account Analytics → Read',
+        hint: '只读用量，不改任何资源。留空则仪表盘显示「未接入」，不会显示错误的 0',
+      },
+      {
+        key: 'cf_account_id',
+        label: 'Account ID',
+        optional: true,
+        placeholder: '32 位十六进制',
+        hint: 'Cloudflare 控制台右侧栏可见（Account ID）',
       },
     ],
   },

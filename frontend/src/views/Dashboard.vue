@@ -68,50 +68,111 @@
         </ul>
       </div>
 
-      <!-- ── 任务概览：一张主卡承载全部计数 ─────────────────────
-           原来拆成"蓝色大卡 + 已成功 + 已失败"三张，那是沿用发卡网
-           把营收当主指标的布局。任务网关里三个计数是同一件事的三个
-           状态，合在一张卡里更省空间也更好扫读。 -->
+      <!-- ── 额度仪表盘：这张卡替代了原来占最大面积的「任务概览」 ────
+           为什么换：任务概览（进行中/已成功/已失败）只在有任务时有信息量，
+           而本网关一天几个构建，绝大多数时间三个数字都是同一个值。
+           真正天天要看、且看晚了会出事的是 **额度** —— KV 免费档只有
+           读 10 万/天、写 1000/天、list 1000/天，写和 list 打满就直接
+           503，比"任务成功几个"重要得多。
+
+           数据口径（必须诚实标注，否则会被当成权威数字）：
+             - KV 用量：网关自己记账（Cloudflare 无 KV 用量 API）
+             - Workers 请求数：需配 CF_API_TOKEN，未配则显示"未接入"
+             - 构建次数：来自网关任务索引，是近似值
+           见 frontend/src/views/Dashboard.vue 顶部注释与 /api/usage 实现。 -->
       <section
-        class="rounded-[14px] p-5 text-white relative overflow-hidden mb-4
-               bg-blue-600
+        class="rounded-[14px] bg-white p-5 mb-4
                shadow-[0_1px_2px_rgba(16,24,40,0.06),0_8px_24px_-12px_rgba(16,24,40,0.18)]"
       >
-        <div class="absolute right-0 top-0 opacity-10 translate-x-4 -translate-y-4">
-          <i class="ri-rocket-2-fill text-9xl" />
-        </div>
-
-        <div class="relative flex items-center justify-between mb-4">
+        <div class="flex items-start justify-between mb-4">
           <div>
-            <p class="text-blue-100 text-[11px] font-bold uppercase tracking-wider opacity-90">
-              任务概览
-            </p>
-            <p class="text-white/70 text-[11px] mt-0.5">
-              {{ job.hasActive ? '有任务进行中，状态自动刷新' : '全部完成，已停止自动刷新' }}
+            <h2 class="font-bold text-slate-800 text-[15px] flex items-center">
+              <i class="ri-dashboard-3-line mr-1.5 text-blue-500" /> 额度用量
+            </h2>
+            <p class="text-[11px] text-gray-400 mt-0.5">
+              UTC {{ usage?.date || '—' }} · 每日 00:00 UTC 重置
             </p>
           </div>
-          <span class="flex items-center gap-1.5 text-[11px] font-bold bg-white/15 px-2.5 py-1 rounded-full">
-            <span
-              class="w-1.5 h-1.5 rounded-full bg-white"
-              :class="{ 'animate-dot': job.hasActive }"
-            />
-            {{ job.hasActive ? '刷新中' : '已暂停' }}
+          <span
+            v-if="worstPct >= 80"
+            class="flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-full"
+            :class="worstPct >= 95 ? 'bg-red-50 text-red-600' : 'bg-amber-50 text-amber-600'"
+          >
+            <i class="ri-alert-line" /> {{ worstPct >= 95 ? '即将耗尽' : '用量偏高' }}
           </span>
         </div>
 
-        <div class="relative grid grid-cols-3 gap-2">
-          <div>
-            <div class="text-2xl font-semibold tracking-tight leading-none">{{ running }}</div>
-            <div class="text-[11px] text-blue-100 mt-1.5 opacity-90">进行中</div>
+        <!-- 未加载：给骨架而不是假数字 -->
+        <div v-if="!usage" class="space-y-3">
+          <div v-for="i in 3" :key="i" class="h-8 bg-slate-50 rounded-lg animate-pulse" />
+        </div>
+
+        <div v-else class="space-y-3">
+          <!-- KV 写与 list 是最稀缺的两项（1000/天），排在最前并用更醒目的色 -->
+          <div v-for="row in kvRows" :key="row.key">
+            <div class="flex items-baseline justify-between mb-1">
+              <span class="text-[11px] font-semibold text-slate-600 flex items-center">
+                {{ row.label }}
+                <span v-if="row.critical" class="ml-1 text-[9px] text-red-500 font-bold">最稀缺</span>
+              </span>
+              <span class="text-[11px] text-gray-400 font-mono">
+                {{ fmtNum(row.used) }} / {{ fmtNum(row.limit) }}
+                <span class="ml-1" :class="row.pct >= 80 ? 'text-red-500 font-bold' : ''">
+                  {{ row.pct }}%
+                </span>
+              </span>
+            </div>
+            <div class="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+              <div
+                class="h-full rounded-full transition-all duration-500"
+                :class="barClass(row.pct, row.critical)"
+                :style="{ width: Math.max(row.pct, row.used > 0 ? 2 : 0) + '%' }"
+              />
+            </div>
           </div>
-          <div class="border-l border-white/20 pl-3">
-            <div class="text-2xl font-semibold tracking-tight leading-none">{{ succeeded }}</div>
-            <div class="text-[11px] text-blue-100 mt-1.5 opacity-90">已成功</div>
+
+          <!-- Workers 请求数：需要额外 token，未接入时明确说"未接入" -->
+          <div class="pt-2 border-t border-slate-50">
+            <div class="flex items-baseline justify-between mb-1">
+              <span class="text-[11px] font-semibold text-slate-600">Workers 请求</span>
+              <span v-if="usage.workers.source === 'graphql'" class="text-[11px] text-gray-400 font-mono">
+                {{ fmtNum(usage.workers.requests.used) }} / {{ fmtNum(usage.workers.requests.limit) }}
+                <span class="ml-1" :class="usage.workers.requests.pct >= 80 ? 'text-red-500 font-bold' : ''">
+                  {{ usage.workers.requests.pct }}%
+                </span>
+              </span>
+              <button
+                v-else
+                class="text-[10px] text-blue-500 font-semibold flex items-center"
+                @click="showUsageHint = !showUsageHint"
+              >
+                <i class="ri-question-line mr-0.5" /> 未接入
+              </button>
+            </div>
+            <div v-if="usage.workers.source === 'graphql'" class="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+              <div
+                class="h-full rounded-full transition-all duration-500"
+                :class="barClass(usage.workers.requests.pct, false)"
+                :style="{ width: Math.max(usage.workers.requests.pct, 1) + '%' }"
+              />
+            </div>
+            <p v-else-if="showUsageHint" class="text-[10px] text-gray-400 leading-relaxed mt-1">
+              {{ usage.workers.hint }}
+            </p>
           </div>
-          <div class="border-l border-white/20 pl-3">
-            <div class="text-2xl font-semibold tracking-tight leading-none">{{ failed }}</div>
-            <div class="text-[11px] text-blue-100 mt-1.5 opacity-90">已失败</div>
+        </div>
+
+        <!-- 底部一行小字：原来任务概览的三个计数挪到这里，不占版面 -->
+        <div class="mt-4 pt-3 border-t border-slate-50 flex items-center justify-between text-[11px]">
+          <div class="flex items-center gap-3 text-gray-400">
+            <span><b class="text-slate-600">{{ running }}</b> 进行中</span>
+            <span><b class="text-green-600">{{ succeeded }}</b> 成功</span>
+            <span><b class="text-red-500">{{ failed }}</b> 失败</span>
           </div>
+          <span class="text-gray-300 flex items-center">
+            <i class="ri-refresh-line mr-0.5" :class="{ 'animate-spin': job.loading }" />
+            {{ job.hasActive ? '自动刷新' : '已暂停' }}
+          </span>
         </div>
       </section>
 
@@ -194,7 +255,7 @@
 
         <div v-else class="space-y-3">
           <div
-            v-for="j in job.jobs"
+            v-for="j in visibleJobs"
             :key="j.job_id"
             class="bg-white p-4 rounded-[16px] shadow-[0_2px_8px_rgba(0,0,0,0.02)]"
           >
@@ -266,6 +327,16 @@
               </a>
             </div>
           </div>
+          <!-- 展开/收起：默认只显示最近 3 条，其余折叠 -->
+          <button
+            v-if="hiddenJobCount > 0 || jobsExpanded"
+            class="w-full py-3 text-xs font-bold text-slate-500 bg-white rounded-[14px]
+                   shadow-[0_2px_8px_rgba(0,0,0,0.02)] active:scale-[0.99] transition"
+            @click="jobsExpanded = !jobsExpanded"
+          >
+            <i :class="jobsExpanded ? 'ri-arrow-up-s-line' : 'ri-arrow-down-s-line'" class="mr-1" />
+            {{ jobsExpanded ? '收起' : `展开其余 ${hiddenJobCount} 条` }}
+          </button>
         </div>
       </div>
     </main>
@@ -299,6 +370,67 @@ const running = computed(
 )
 const succeeded = computed(() => job.jobs.filter((j) => j.app_status === 'SUCCESS').length)
 const failed = computed(() => job.jobs.filter((j) => j.app_status === 'FAILED').length)
+
+// ── 额度仪表盘 ──────────────────────────────────────────────────────
+const usage = computed(() => job.usage)
+/** 未接入 Workers 请求数时展开提示 */
+const showUsageHint = ref(false)
+
+/**
+ * KV 四行指标。顺序按「稀缺程度」排，不是按字母或读写顺序：
+ *   写 1000/天、list 1000/天  ← 最稀缺，打满就 503
+ *   读 10 万/天              ← 宽松 100 倍
+ * delete 放在最后，通常为 0（本项目只有 TTL 自然过期，极少显式删）。
+ */
+const kvRows = computed(() => {
+  const k = usage.value?.kv
+  if (!k) return []
+  return [
+    { key: 'writes', label: 'KV 写入', critical: true, ...k.writes },
+    { key: 'lists', label: 'KV 列表', critical: true, ...k.lists },
+    { key: 'reads', label: 'KV 读取', critical: false, ...k.reads },
+  ]
+})
+
+/** 最紧张的那一项的百分比，用于卡片右上角的总告警。 */
+const worstPct = computed(() => {
+  const rows = kvRows.value
+  if (!rows.length) return 0
+  return Math.max(...rows.map((r) => r.pct || 0))
+})
+
+/**
+ * 进度条配色。
+ *
+ * 稀缺项（写/list）用红→橙→绿，因为它们的 100% 意味着服务直接不可用；
+ * 宽松项（读）用蓝，避免满屏红色造成告警疲劳。
+ */
+function barClass(pct, critical) {
+  if (pct >= 95) return 'bg-red-500'
+  if (pct >= 80) return 'bg-amber-500'
+  return critical ? 'bg-orange-400' : 'bg-blue-500'
+}
+
+/** 数字缩写：12000 → 12.0k。额度面板只看量级，不需要精确到个位。 */
+function fmtNum(n) {
+  if (n == null) return '—'
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+  return String(n)
+}
+
+// ── 任务列表折叠 ────────────────────────────────────────────────────
+/**
+ * 任务列表默认只显示最近 3 条。
+ *
+ * 为什么：这个面板一屏能放的东西有限，而"看全部历史"不是日常操作——
+ * 真要看的人会点开。默认展开 100 条会把额度卡和发起构建挤出首屏。
+ */
+const JOBS_PREVIEW = 3
+const jobsExpanded = ref(false)
+const visibleJobs = computed(() =>
+  jobsExpanded.value ? job.jobs : job.jobs.slice(0, JOBS_PREVIEW)
+)
+const hiddenJobCount = computed(() => Math.max(0, job.jobs.length - JOBS_PREVIEW))
 
 function pillClass(s) {
   return {
@@ -358,6 +490,7 @@ async function refreshAll() {
   await Promise.all([
     auth.probe(),
     job.loadJobs({ onAuthLost }),
+    job.loadUsage(),
     // 流水线下拉的数据源。之前从没调用过，导致下拉框一直是空的。
     job.loadWorkflows(),
   ])
@@ -444,9 +577,16 @@ function scheduleNext() {
     pollCount++
     await job.loadJobs({ onAuthLost })
 
+    // 额度刷新比任务状态慢得多：它每分钟最多变几十次，而 /api/usage
+    // 自己也要读 KV。跟着 5 秒轮询打只会白耗额度——这正是面板要监控的
+    // 东西，不能反过来成为消耗主力。每 12 次轮询（约 1-2 分钟）刷一次。
+    if (pollCount % 12 === 0) job.loadUsage()
+
     // 全部完成就停，不再排下一次
     if (!job.hasActive) {
       stopPolling()
+      // 停止轮询时补一次额度：构建刚结束，这正是用量变化最明显的时刻
+      job.loadUsage()
       return
     }
     scheduleNext()

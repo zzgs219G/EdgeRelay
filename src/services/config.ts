@@ -44,6 +44,10 @@ export interface RelayConfig {
   rate_limit_per_min?: number;
   job_retention_days?: number;
   run_id_wait_ms?: number;
+  /** Cloudflare API token（Account Analytics: Read），用于查 Workers 请求数。 */
+  cf_api_token?: string;
+  /** Cloudflare Account ID，与 cf_api_token 配对。 */
+  cf_account_id?: string;
 }
 
 /** 敏感字段清单：读接口一律遮蔽。 */
@@ -55,6 +59,8 @@ export const SECRET_FIELDS = [
   // 收进网关的核心目标，必须按敏感字段处理（遮蔽 + 改需二次确认）。
   "r2_access_key_id",
   "r2_secret_access_key",
+  // CF Analytics token 只用于读用量，但仍是账号级凭据，按敏感字段处理。
+  "cf_api_token",
 ] as const;
 export type SecretField = (typeof SECRET_FIELDS)[number];
 
@@ -78,6 +84,8 @@ export const CONFIG_FIELDS = [
   "rate_limit_per_min",
   "job_retention_days",
   "run_id_wait_ms",
+  "cf_api_token",
+  "cf_account_id",
 ] as const;
 export type ConfigField = (typeof CONFIG_FIELDS)[number];
 
@@ -183,6 +191,8 @@ export async function resolveEnv(env: Env): Promise<ResolvedEnv> {
     RATE_LIMIT_PER_MIN: pickNum(cfg.rate_limit_per_min, base.RATE_LIMIT_PER_MIN, 120),
     JOB_RETENTION_DAYS: pickNum(cfg.job_retention_days, base.JOB_RETENTION_DAYS, 7),
     RUN_ID_WAIT_MS: pickNum(cfg.run_id_wait_ms, base.RUN_ID_WAIT_MS, 4000),
+    CF_API_TOKEN: cfg.cf_api_token || base.CF_API_TOKEN,
+    CF_ACCOUNT_ID: cfg.cf_account_id || base.CF_ACCOUNT_ID,
   };
 }
 
@@ -246,6 +256,8 @@ export async function describeConfig(
   secretOrPlain("r2_secret_access_key", merged.R2_SECRET_ACCESS_KEY, Boolean(kvCfg.r2_secret_access_key));
   secretOrPlain("relay_token", merged.RELAY_TOKEN, Boolean(kvCfg.relay_token));
   secretOrPlain("relay_password", merged.RELAY_PASSWORD, Boolean(kvCfg.relay_password));
+  secretOrPlain("cf_api_token", merged.CF_API_TOKEN, Boolean(kvCfg.cf_api_token));
+  secretOrPlain("cf_account_id", merged.CF_ACCOUNT_ID, Boolean(kvCfg.cf_account_id));
 
   // 数值型：直接回显生效值
   config.rate_limit_per_min = Number(merged.RATE_LIMIT_PER_MIN ?? 120);
