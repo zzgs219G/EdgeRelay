@@ -1,33 +1,41 @@
+# ── 依赖 ────────────────────────────────────────────────────────────
 node_modules/
+
+# ── 构建缓存 ────────────────────────────────────────────────────────
 .wrangler/
-dist/
-!frontend/dist/
-.env
-.env.*
-*.log
-.worktrees/
-.dev.vars
 
-# 本地过程产物（构建日志副本等），不进 git
+# ── 前端构建产物：**必须提交** ───────────────────────────────────────
+#
+# 为什么前端产物要进 git：
+#   Cloudflare Workers Builds 的 Build command 可能没填（本项目就靠
+#   npm run deploy 里的 build:frontend 兜底），而 [assets] 直接读
+#   ./frontend/dist。产物不进 git = 部署时目录可能不存在或与源码脱节。
+#
+# 曾踩的坑（线上白屏）：这里曾有两条互相冲突的规则——
+#   dist/             ← 忽略所有 dist
+#   !frontend/dist/   ← 只放行目录本身，不递归放行子项
+#   dist/  （又一条）  ← 把 frontend/dist/assets/ 重新忽略
+# 结果 index.html 被提交了，但它引用的 index-<hash>.js/css 被静默忽略。
+# 新哈希一变，生产上就是 404 → 整页白屏。
+#
+# 现在的写法：只忽略根目录的 /dist，不碰 frontend/dist 下的任何东西。
+/dist/
+# 校验脚本的临时构建目录（scripts/check-dist.mjs 产出）
+frontend/.dist-check/
+
+# ── 本地过程产物 ────────────────────────────────────────────────────
 .local-docs/
+.bak/
 
-# 构建期生成（scripts/patch-remixicon.mjs 产出）
+# ── 构建期生成 ──────────────────────────────────────────────────────
+# scripts/patch-remixicon.mjs 产出，每次构建重新生成
 frontend/src/generated/
 
-build/
-.gradle/
-.idea/
-local.properties
+# ── 环境变量与密钥 ──────────────────────────────────────────────────
+.env
+.env.*
+.dev.vars
+
+# ── 日志与系统文件 ──────────────────────────────────────────────────
 *.log
 .DS_Store
-__pycache__/
-*.pyc
-node_modules/
-dist/
-.env
-*.class
-*.apk
-*.ipa
-# 备份与临时校验产物
-.bak/
-frontend/.dist-check/
