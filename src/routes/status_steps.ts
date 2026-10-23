@@ -13,11 +13,20 @@
 import type { Env } from "../shared/types";
 import { getJob } from "../services/kv";
 import { getRunSteps } from "../services/github";
+import { canAccessJob, type Principal } from "../services/principal";
 import { error, json } from "../shared/http";
 
-export async function handleStatusSteps(env: Env, jobId: string): Promise<Response> {
+export async function handleStatusSteps(
+  env: Env,
+  jobId: string,
+  principal: Principal,
+): Promise<Response> {
   const job = await getJob(env, jobId);
   if (!job) {
+    return error(404, "not_found", `任务 ${jobId} 不存在或已过期`);
+  }
+  // 归属校验：他人的任务按"不存在"处理，不泄漏存在性。
+  if (!canAccessJob(principal, job.owner)) {
     return error(404, "not_found", `任务 ${jobId} 不存在或已过期`);
   }
   if (job.run_id === null) {

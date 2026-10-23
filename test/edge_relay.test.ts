@@ -228,7 +228,10 @@ describe("EdgeRelay — build happy path", () => {
 
     const resp = await worker.fetch(
       authedReq("/api/build", { method: "POST", body: JSON.stringify(VALID_BODY) }),
-      env({ EDGE_RELAY_KV: fakeKv(store), RUN_ID_WAIT_MS: "2000" }),
+      // BUILD_SYNC_RUN_ID=1：本用例断言"落库后 run_id 已绑定"，
+      // 需要同步等待的旧行为。默认（异步）路径见下面的"returns queued
+      // immediately"用例。
+      env({ EDGE_RELAY_KV: fakeKv(store), RUN_ID_WAIT_MS: "2000", BUILD_SYNC_RUN_ID: "1" }),
       {} as ExecutionContext,
     );
 

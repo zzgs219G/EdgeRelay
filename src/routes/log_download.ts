@@ -14,14 +14,23 @@
 import type { Env } from "../shared/types";
 import { getJob } from "../services/kv";
 import { listArtifacts, LOG_ARTIFACT_NAME } from "../services/github";
+import { canAccessJob, type Principal } from "../services/principal";
 import { error } from "../shared/http";
 
 /** 日志 artifact 不应超过这个大小；超过说明配置有问题，别整包转发。 */
 const MAX_LOG_BYTES = 20 * 1024 * 1024;
 
-export async function handleLogDownload(env: Env, jobId: string): Promise<Response> {
+export async function handleLogDownload(
+  env: Env,
+  jobId: string,
+  principal: Principal,
+): Promise<Response> {
   const job = await getJob(env, jobId);
   if (!job) {
+    return error(404, "not_found", `任务 ${jobId} 不存在或已过期`);
+  }
+  // 归属校验：他人的任务按"不存在"处理，不泄漏存在性。
+  if (!canAccessJob(principal, job.owner)) {
     return error(404, "not_found", `任务 ${jobId} 不存在或已过期`);
   }
   if (job.run_id === null) {

@@ -14,11 +14,21 @@ import { isStalled, stalledMessage, toAppStatus } from "../domain/job";
 import { describeGitHubError, fetchLogArtifactUrl, getRun, GitHubError } from "../services/github";
 import { getJob, patchJob } from "../services/kv";
 import { explainDownloadFailure, resolveDownloadUrl } from "../services/download";
+import { canAccessJob, type Principal } from "../services/principal";
 import { error, json } from "../shared/http";
 
-export async function handleStatus(env: Env, jobId: string): Promise<Response> {
+export async function handleStatus(
+  env: Env,
+  jobId: string,
+  principal: Principal,
+): Promise<Response> {
   const job = await getJob(env, jobId);
   if (!job) {
+    return error(404, "not_found", `任务 ${jobId} 不存在或已过期`);
+  }
+
+  // 归属校验：不是自己的任务按"不存在"处理，不泄漏任务是否存在。
+  if (!canAccessJob(principal, job.owner)) {
     return error(404, "not_found", `任务 ${jobId} 不存在或已过期`);
   }
 

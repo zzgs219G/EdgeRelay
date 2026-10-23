@@ -28,15 +28,22 @@ import {
   rebuildJobIds,
   shouldAttemptIndexRebuild,
 } from "../services/kv";
+import { canAccessJob, type Principal } from "../services/principal";
 import { CACHE_TTL_MS, readJobsCache, writeJobsCache } from "../services/job_list_cache";
 import { json } from "../shared/http";
 
-export async function handleListJobs(env: Env, url: URL): Promise<Response> {
+export async function handleListJobs(
+  env: Env,
+  url: URL,
+  principal: Principal,
+): Promise<Response> {
   const limitRaw = Number.parseInt(url.searchParams.get("limit") ?? "50", 10);
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 50;
 
   const now = Date.now();
-  const cachedList = readJobsCache();
+  // 缓存按主体分桶：不同令牌看到的列表不同，不能共用一份。
+  // 但也不能为此禁用缓存——令牌（APP）恰恰是轮询最频繁的一方。
+  const cachedList = readJobsCache(principal.id);
   if (cachedList && now - cachedList.at < CACHE_TTL_MS && cachedList.limit >= limit) {
     return json(cachedList.payload);
   }
@@ -60,8 +67,15 @@ export async function handleListJobs(env: Env, url: URL): Promise<Response> {
   }
   jobs.sort((a, b) => b.created_at_ms - a.created_at_ms);
 
+  // 归属过滤：令牌只能看到自己的任务；面板是管理员，看全部。
+  // 过滤发生在取数之后，因为 job_id 索引本身不记录归属（那会让索引
+  // 结构变复杂），而单次 get 的额度（10 万/天）足够覆盖这个过滤。
+  const visible = principal.kind === "panel"
+    ? jobs
+    : jobs.filter((j) => canAccessJob(principal, j.owner));
+
   const payload = {
-    jobs: jobs.map((j) => ({
+    jobs: visible.map((j) => ({
       job_id: j.job_id,
       status: j.status,
       app_status: toAppStatus(j),
@@ -82,7 +96,7 @@ export async function handleListJobs(env: Env, url: URL): Promise<Response> {
     //
     // 降级时（拿不到列表）也算非活跃：没有数据就不该继续轮询，
     // 那只会每 15 秒去撞一次注定失败的 list。
-    has_active: !degraded && jobs.some((j) => j.status !== "completed" && !isStalled(env, j)),
+    has_active: !degraded && visible.some((j) => j.status !== "completed" && !isStalled(env, j)),
     // 拿不到列表时给前端一句人话。降级时仍返回 200：这不是网关故障，
     // 是 KV list 当日额度用尽，报 503 只会让人误以为服务挂了而反复刷新。
     notice: degraded
@@ -90,7 +104,7 @@ export async function handleListJobs(env: Env, url: URL): Promise<Response> {
       : null,
   };
 
-  writeJobsCache({ at: now, limit, payload });
+  writeJobsCache(principal.id, { at: now, limit, payload });
   return json(payload);
 }
 

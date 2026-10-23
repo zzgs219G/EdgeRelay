@@ -19,6 +19,7 @@ import { describeGitHubError, dispatchWorkflow, GitHubError, listRecentRuns } fr
 import { putJob, putNewJob } from "../services/kv";
 import { describeModules } from "../services/modules";
 import { invalidateJobsCache } from "../services/job_list_cache";
+import type { Principal } from "../services/principal";
 import { error, json } from "../shared/http";
 
 const MAX_CONFIG_BYTES = 64 * 1024;
@@ -38,6 +39,7 @@ export async function handleBuild(
   request: Request,
   env: Env,
   ctx: ExecutionContext,
+  principal: Principal,
 ): Promise<Response> {
   let body: BuildRequest;
   try {
@@ -46,7 +48,7 @@ export async function handleBuild(
     return error(400, "bad_request", "请求体不是合法 JSON");
   }
 
-  const problems = validateBuildRequest(body);
+  const problems = validateBuildRequest(body, env);
   if (problems.length > 0) {
     return error(400, "bad_request", problems.join("；"));
   }
@@ -58,6 +60,7 @@ export async function handleBuild(
   const jobId = newJobId(now);
   const job: BuildJob = {
     job_id: jobId,
+    owner: principal.id,
     run_id: null,
     workflow_file: body.workflow_file,
     workflow_name: body.workflow_file,
@@ -111,37 +114,168 @@ export async function handleBuild(
     return json(resp, 200);
   }
 
-  // 同步等 run_id（不占满整个请求预算，失败可丢弃）。
-  const runId = await waitForRunId(env, body.workflow_file, now);
-
-  // 没拿到 run_id 就不写第二次：状态仍是 queued，与落库时一致，
-  // 这次写只会白耗一次 KV 写额度（免费 1000 次/天）。
-  // run_id 由 routes/status.ts 的「读缺失即回查」与 cron 补绑。
-  const finalStatus = runId !== null ? "in_progress" : job.status;
-  if (runId !== null) {
-    await putJob(env, {
-      ...job,
-      run_id: runId,
-      status: finalStatus,
-      updated_at_ms: Date.now(),
-    });
+  // ── run_id 补绑改为异步 ────────────────────────────────────────────
+  //
+  // 旧实现同步等 RUN_ID_WAIT_MS（默认 4s）才返回。问题：
+  //   1. 请求最长挂 4 秒，Worker 有墙钟上限，高并发时容易攒住连接；
+  //   2. 这 4 秒对调用方毫无价值——APP 拿到 job_id 就该返回，状态靠轮询。
+  //
+  // 现在：dispatch 成功后立刻返回 queued，把探测丢给 ctx.waitUntil。
+  // 探测成功就写 in_progress，失败则由三个下游兜底，APP 无需区别对待：
+  //   - routes/status.ts 的「读缺失即回查」
+  //   - services/reconcile.ts 的 cron 补绑
+  //   - 停滞判死（domain/job.ts 的 isStalled）
+  //
+  // 为什么仍保留同步探测能力：`BUILD_SYNC_RUN_ID=1` 可切回旧行为，
+  // 供排查"run_id 到底有没有绑上"时使用，也让原有测试语义不变。
+  if (env.BUILD_SYNC_RUN_ID === "1") {
+    const runId = await waitForRunId(env, body.workflow_file, now);
+    if (runId !== null) {
+      await putJob(env, {
+        ...job,
+        run_id: runId,
+        status: "in_progress",
+        updated_at_ms: Date.now(),
+      });
+      const resp: BuildResponse = { success: true, job_id: jobId, status: "in_progress" };
+      return json(resp, 200);
+    }
+  } else {
+    // 防御：ExecutionContext 理论上一定有 waitUntil，但测试/边缘环境可能传
+    // 空对象。此时**不启动**后台探测——而不是"启动了但没人等"。
+    //
+    // 为什么不能用 `void bindRunIdInBackground(...)`：那个 Promise 会继续
+    // 跑、继续打 GitHub，与后续请求的计数器/桩函数互相污染（表现为
+    // "探测次数多了 1 次"这种诡异 flaky）。run_id 补绑本来就有 cron 与
+    // status 回查两条兜底，跳过不影响正确性。
+    if (typeof ctx?.waitUntil === "function") {
+      ctx.waitUntil(bindRunIdInBackground(env, job));
+    }
   }
-
-  // 已经把状态写成 in_progress 了，这里顺手触发一次状态刷新不划算——
-  // cron 兜底 + APP 轮询 /api/status 都会推进，无需 waitUntil。
-  void ctx;
 
   // 刻意不返回 run_id：APP 只需要 job_id，而 run_id 属于 GitHub 侧信息，
   // 下发即暴露。调试时用 /api/status（服务端内部会带上，但不含 run_id）。
   const resp: BuildResponse = {
     success: true,
     job_id: jobId,
-    status: finalStatus,
+    status: "queued",
   };
   return json(resp, 200);
 }
 
-/** 组装除 apk_url 之外的 workflow inputs。 */
+/**
+ * 后台补绑 run_id（ctx.waitUntil 里跑）。
+ *
+ * 探测到就写 in_progress；探测不到什么都不做——保持 queued，交给
+ * cron 与 status 回查。**不写 KV** 是刻意的：没变化就写只会白耗写额度
+ * （免费档 1000 次/天）。
+ */
+async function bindRunIdInBackground(env: Env, job: BuildJob): Promise<void> {
+  try {
+    const runId = await waitForRunId(env, job.workflow_file, job.created_at_ms);
+    if (runId === null) return;
+    await putJob(env, {
+      ...job,
+      run_id: runId,
+      status: "in_progress",
+      updated_at_ms: Date.now(),
+    });
+  } catch (err) {
+    // 后台任务失败不该影响已返回的响应，只留日志。
+    console.error("background run_id bind failed", {
+      job_id: job.job_id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
+ * 校验 apk_url 的来源，防 SSRF 与额度滥用。
+ *
+ * 为什么必须校验：`apk_url` 会原样传给 GitHub 流水线，由 **GitHub Runner**
+ * 去下载。只要是个 http 链接就放行的话，攻击者可以让 Runner 去拉：
+ *   - 云厂商元数据地址（169.254.169.254）→ 窃取 Runner 上的临时凭证
+ *   - 内网地址                                     → 端口扫描/内网探测
+ *   - 超大的公开文件                              → 烧掉 Actions 分钟数
+ *
+ * 策略（按优先级）：
+ *   1. 配了 R2_PUBLIC_DOMAIN  → host 必须与它一致（强校验）
+ *   2. 没配                    → 拒绝私网/回环/元数据地址（弱校验兜底）
+ *
+ * 为什么第 2 种不直接全拒：R2_PUBLIC_DOMAIN 是"必须配"但线上曾长期漏配，
+ * 直接拒绝会让整个构建接口在这个配置缺失时彻底不可用——那比 SSRF 风险
+ * 更常见。弱校验能挡住最危险的地址，同时保留可用性。
+ */
+function checkApkUrlHost(raw: string, env: Env): string | null {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return "apk_url 不是合法 URL";
+  }
+
+  // 只允许 https：http 明文传输 APK，且流水线侧无 TLS 校验。
+  if (url.protocol !== "https:") {
+    return "apk_url 必须是 https 链接";
+  }
+
+  // ── 强校验：配置了 R2 公开域名就只认它 ──
+  const allowedDomain = (env.R2_PUBLIC_DOMAIN ?? "").trim();
+  if (allowedDomain) {
+    let allowedHost: string;
+    try {
+      allowedHost = new URL(allowedDomain).host;
+    } catch {
+      // 配置本身坏了：不能因此放行任意 host，退回弱校验。
+      allowedHost = "";
+    }
+    if (allowedHost) {
+      if (url.host !== allowedHost) {
+        return `apk_url 的域名必须是 ${allowedHost}（R2 公开域名）`;
+      }
+      return null;
+    }
+  }
+
+  // ── 弱校验：拒绝私网 / 回环 / 链路本地 / 元数据 ──
+  const host = url.hostname.toLowerCase();
+
+  // IPv4 字面量
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
+    const [a, b] = host.split(".").map(Number);
+    const isPrivate =
+      a === 10 ||
+      a === 127 ||
+      (a === 169 && b === 254) || // 链路本地，含 169.254.169.254 元数据
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      a === 0;
+    if (isPrivate) return "apk_url 不能指向私网或元数据地址";
+  }
+
+  // IPv6 字面量（URL 里带方括号，hostname 已去掉括号）
+  if (host.includes(":")) {
+    if (host === "::1" || host.startsWith("fe80") || host.startsWith("fc") || host.startsWith("fd")) {
+      return "apk_url 不能指向私网或回环地址";
+    }
+  }
+
+  // 主机名形式的内网地址
+  if (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host.endsWith(".internal") ||
+    host.endsWith(".local")
+  ) {
+    return "apk_url 不能指向内网主机";
+  }
+
+  return null;
+}
+
+/**
+ * 组装除 apk_url 之外的 workflow inputs。
+ */
 function buildDispatchInputs(body: BuildRequest): Record<string, string> {
   const inputs: Record<string, string> = {};
   // protect_config 是永久冻结的 input 键名（apk-protect-action 设计约定）。
@@ -213,13 +347,18 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function validateBuildRequest(body: BuildRequest): string[] {
+function validateBuildRequest(body: BuildRequest, env: Env): string[] {
   const problems: string[] = [];
   if (typeof body.apk_url !== "string" || body.apk_url.length === 0) {
     problems.push("apk_url 不能为空");
   } else {
     if (body.apk_url.length > MAX_URL_BYTES) problems.push("apk_url 过长");
-    if (!/^https?:\/\//.test(body.apk_url)) problems.push("apk_url 必须是 http(s) 链接");
+    if (!/^https?:\/\//.test(body.apk_url)) {
+      problems.push("apk_url 必须是 http(s) 链接");
+    } else {
+      const hostProblem = checkApkUrlHost(body.apk_url, env);
+      if (hostProblem) problems.push(hostProblem);
+    }
   }
   if (typeof body.workflow_file !== "string" || body.workflow_file.length === 0) {
     problems.push("workflow_file 不能为空");

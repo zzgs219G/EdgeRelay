@@ -13,7 +13,8 @@
 import type { Env } from "./shared/types";
 import { resolveEnv, type ResolvedEnv } from "./services/config";
 import { reconcileOpenJobs } from "./services/reconcile";
-import { checkAuth } from "./middleware/auth";
+import { authenticate } from "./middleware/auth";
+import { PANEL_OWNER, type Principal } from "./services/principal";
 import { checkRateLimit } from "./middleware/rate_limit";
 import { healthCheck } from "./middleware/health";
 import { error, json, withCors } from "./shared/http";
@@ -89,9 +90,14 @@ export default {
     // deliberately 不做成全局前置：RELAY_TOKEN / RELAY_PASSWORD 是后端
     // secret，与"浏览器能否打开页面"无关。全局拦会把 / 这种本该返回
     // 页面的路径也变成 500，排障时看到的是一句与现象无关的报错。
+    //
+    // 鉴权通过后拿到 principal（主体身份），供各路由做任务归属校验。
+    // 面板是特权主体（可读全部任务），令牌只能读自己的。
+    let principal: Principal = { kind: "panel", id: PANEL_OWNER };
     if (url.pathname.startsWith("/api/")) {
-      const authErr = await checkAuth(request, cfg);
-      if (authErr) return authErr;
+      const auth = await authenticate(request, cfg);
+      if (auth.error) return auth.error;
+      if (auth.principal) principal = auth.principal;
 
       const rlErr = checkRateLimit(request, cfg);
       if (rlErr) return rlErr;
@@ -100,19 +106,19 @@ export default {
     try {
       switch (true) {
         case url.pathname === "/api/jobs" && request.method === "GET":
-          return await handleListJobs(cfg, url);
+          return await handleListJobs(cfg, url, principal);
 
         case url.pathname === "/api/workflows" && request.method === "GET":
           return await handleWorkflows(cfg, url);
 
         case url.pathname === "/api/build" && request.method === "POST":
-          return await handleBuild(request, cfg, ctx);
+          return await handleBuild(request, cfg, ctx, principal);
 
         // 日志下载：代理 GitHub artifact（带令牌取回后转发给面板）
         case url.pathname.startsWith("/api/log/") && request.method === "GET": {
           const id = decodeURIComponent(url.pathname.slice("/api/log/".length));
           if (!id) return error(400, "bad_request", "缺少 jobId");
-          return await handleLogDownload(cfg, id);
+          return await handleLogDownload(cfg, id, principal);
         }
 
         // 产物下载：同 log 的代理思路。download_url 是 GitHub artifact 链接时，
@@ -121,7 +127,7 @@ export default {
         case url.pathname.startsWith("/api/artifact/") && request.method === "GET": {
           const id = decodeURIComponent(url.pathname.slice("/api/artifact/".length));
           if (!id) return error(400, "bad_request", "缺少 jobId");
-          return await handleArtifactDownload(cfg, id);
+          return await handleArtifactDownload(cfg, id, principal);
         }
 
         // 步骤明细必须排在 /api/status/ 前缀匹配之前，
@@ -133,7 +139,7 @@ export default {
             url.pathname.slice("/api/status/".length, -"/steps".length),
           );
           if (!id) return error(400, "bad_request", "缺少 jobId");
-          return await handleStatusSteps(cfg, id);
+          return await handleStatusSteps(cfg, id, principal);
         }
 
         case url.pathname === "/api/status/" && request.method === "GET":
@@ -142,7 +148,7 @@ export default {
         case url.pathname.startsWith("/api/status/") && request.method === "GET": {
           const jobId = decodeURIComponent(url.pathname.slice("/api/status/".length));
           if (!jobId) return error(400, "bad_request", "缺少 jobId");
-          return await handleStatus(cfg, jobId);
+          return await handleStatus(cfg, jobId, principal);
         }
 
         // ── R2 预签名：APP 拿签名 URL 直传，密钥不出网关 ──

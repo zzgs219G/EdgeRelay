@@ -525,7 +525,10 @@ describe("waitForRunId probes a fixed number of times", () => {
           protect_config: '{"modules":[]}',
         }),
       }),
-      env({ EDGE_RELAY_KV: countingKv().kv, RUN_ID_WAIT_MS: "4000" }),
+      // BUILD_SYNC_RUN_ID=1：本用例测的是「同步探测固定 3 次」这一实现细节。
+      // 默认异步路径把探测丢给 ctx.waitUntil，测试的 ctx 是空对象且不会
+      // 等待它完成，因此必须显式启用同步模式才能观察探测次数。
+      env({ EDGE_RELAY_KV: countingKv().kv, RUN_ID_WAIT_MS: "4000", BUILD_SYNC_RUN_ID: "1" }),
       {} as ExecutionContext,
     );
     const elapsed = Date.now() - started;
@@ -561,7 +564,9 @@ describe("waitForRunId probes a fixed number of times", () => {
           protect_config: '{"modules":[]}',
         }),
       }),
-      env({ EDGE_RELAY_KV: kv, RUN_ID_WAIT_MS: "4000" }),
+      // BUILD_SYNC_RUN_ID=1：本用例断言「响应里状态已是 in_progress」
+      // 且 run_id 已落库，属于同步等待才能观察到的结果。
+      env({ EDGE_RELAY_KV: kv, RUN_ID_WAIT_MS: "4000", BUILD_SYNC_RUN_ID: "1" }),
       {} as ExecutionContext,
     );
 

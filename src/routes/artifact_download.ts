@@ -26,6 +26,7 @@
 import type { Env } from "../shared/types";
 import { getJob } from "../services/kv";
 import { listArtifacts, LOG_ARTIFACT_NAME } from "../services/github";
+import { canAccessJob, type Principal } from "../services/principal";
 import { error } from "../shared/http";
 
 /** 产物上限。APK + 签名后的包可能上百 MB，给 1GB 宽限；超了说明配置有问题。 */
@@ -34,9 +35,17 @@ const MAX_ARTIFACT_BYTES = 1024 * 1024 * 1024;
 /** 取回上游的超时。大文件慢网络，比日志的 60s 宽松。 */
 const UPSTREAM_TIMEOUT_MS = 10 * 60_000;
 
-export async function handleArtifactDownload(env: Env, jobId: string): Promise<Response> {
+export async function handleArtifactDownload(
+  env: Env,
+  jobId: string,
+  principal: Principal,
+): Promise<Response> {
   const job = await getJob(env, jobId);
   if (!job) {
+    return error(404, "not_found", `任务 ${jobId} 不存在或已过期`);
+  }
+  // 归属校验：他人的任务按"不存在"处理，不泄漏存在性。
+  if (!canAccessJob(principal, job.owner)) {
     return error(404, "not_found", `任务 ${jobId} 不存在或已过期`);
   }
   if (job.run_id === null) {

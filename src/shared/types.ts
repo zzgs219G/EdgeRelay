@@ -40,6 +40,17 @@
 export interface BuildJob {
   /** 网关签发的任务 ID，与 GitHub 无任何可推断关系。 */
   job_id: string;
+  /**
+   * 任务归属：`panel`（管理员）或 `token:<指纹>`。
+   *
+   * 为什么必须有：jobId 可枚举（逆序时间戳 + 8 位随机），没有归属时任何
+   * 持有令牌的调用方都能读到别人的任务、产物链接与加固配置。
+   * 见 services/principal.ts 的 canAccessJob。
+   *
+   * 本次升级前创建的旧任务没有这个字段——它们只对面板可见（保守策略），
+   * 7 天后随 KV TTL 自然消失。
+   */
+  owner?: string;
   /** GitHub Actions 的 run id；补绑成功前为 null。 */
   run_id: number | null;
   /** workflow 文件名，如 protect-modules.yml。 */
@@ -192,4 +203,12 @@ export interface Env {
   JOB_STALL_TIMEOUT_MIN?: string;
   /** dispatch 后等待 run_id 出现的最大毫秒数，默认 4000。 */
   RUN_ID_WAIT_MS?: string;
+  /**
+   * 设为 "1" 时，POST /api/build 会同步等 run_id 再返回（旧行为）。
+   *
+   * 默认不走这条：dispatch 成功后立刻返回 queued，run_id 由
+   * ctx.waitUntil 后台补绑。同步等待会让请求最长挂 4 秒，Worker 有墙钟上限。
+   * 保留开关是为了排查「run_id 到底绑上没有」，也让原有测试语义不变。
+   */
+  BUILD_SYNC_RUN_ID?: string;
 }
