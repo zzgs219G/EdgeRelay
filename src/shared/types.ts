@@ -185,6 +185,8 @@ export interface Env {
   GITHUB_REPO: string;
   /** 触发分支，默认 main。 */
   GITHUB_REF?: string;
+  /** 部署版本号（wrangler.toml [vars] APP_VERSION），用于 /health 与面板显示。 */
+  APP_VERSION?: string;
   /** R2 公开域名，用于把 GitHub 注解里被打码的 URL 补全，也用于拼产物链接。 */
   R2_PUBLIC_DOMAIN?: string;
   /** R2 S3 API 端点，形如 https://<account>.r2.cloudflarestorage.com */

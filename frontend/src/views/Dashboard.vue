@@ -11,6 +11,13 @@
             <i class="ri-shield-keyhole-fill text-white text-sm" />
           </div>
           <span class="font-bold text-lg text-slate-800 tracking-tight truncate-1">EdgeRelay</span>
+          <!-- 版本号：来自 /health 的 version 字段（wrangler.toml 的 APP_VERSION）。
+               排查"改了代码但线上没生效"时靠它确认线上跑的是哪一版。 -->
+          <span
+            v-if="auth.health?.version"
+            class="ml-2 px-1.5 py-0.5 rounded text-[10px] font-mono text-slate-400 bg-slate-100 flex-shrink-0"
+            :title="`服务端版本 ${auth.health.version}`"
+          >v{{ auth.health.version }}</span>
         </div>
         <div class="flex items-center space-x-1 flex-shrink-0">
           <button

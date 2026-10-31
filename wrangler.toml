@@ -126,6 +126,11 @@ port = 8787
 
 # ── 非密配置 ─────────────────────────────────────────────────────────
 [vars]
+# 部署版本号：/health 与面板会显示它。
+# 为什么要有：排查"改了代码但线上没生效"时，这是唯一能确认线上版本的判据。
+# 发布时改这一行（或由 CI 覆盖）。
+APP_VERSION = "1.0.0"
+
 # 触发分支（artifact-pipeline 的默认分支）。
 GITHUB_REF = "main"
 
@@ -210,6 +215,7 @@ R2_PUBLIC_DOMAIN = "https://r2.614118.xyz"
 [previews.vars]
 # 预览用独立标记，便于在日志/观测里区分请求来源。
 ENVIRONMENT = "preview"
+APP_VERSION = "1.0.0-preview"
 GITHUB_REF = "main"
 GITHUB_OWNER = "zzgs219G"
 GITHUB_REPO = "artifact-pipeline"

@@ -73,6 +73,10 @@ export async function healthCheck(env: Env): Promise<Response> {
     {
       ok: healthy,
       service: "edge-relay",
+      // 版本号来自 wrangler.toml 的 [vars] APP_VERSION。
+      // 为什么要有：面板与 CLI 都无法从别处得知"线上跑的是哪一版"，
+      // 排查"改了代码但线上没生效"时这是唯一的判据。
+      version: (env.APP_VERSION ?? "").trim() || "unknown",
       server_time: Date.now(),
       kv: kvOk ? "ok" : "error",
       // missing 保留给"会导致构建失败"的项，语义与 warnings 一致
