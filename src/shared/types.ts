@@ -139,6 +139,16 @@ export interface BuildRequest {
   protect_config: string;
   dpt_extra_args?: string;
   display_name?: string;
+  /**
+   * 是否请求流水线用仓库 Secrets 里的 keystore 重签产物。
+   *
+   * 默认 false —— 本仓库契约是「产出未签名包，开发者自行重签」。
+   * 只有 CLI 调试（trigger_build.py --sign）才置 true。
+   *
+   * ⚠️ keystore 必须与上传 APK 同源：加 --sigcheck 后 libnc.so 里写的是
+   *    原证书指纹，换证书重签 → 运行期证书派生失败 → 包起不来。
+   */
+  sign?: boolean;
 }
 
 /** POST /api/build 的响应体。 */

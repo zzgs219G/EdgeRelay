@@ -282,6 +282,9 @@ function buildDispatchInputs(body: BuildRequest): Record<string, string> {
   // 仓库已迁移到 artifact-pipeline，但键名不变 —— workflow yml 与 APP 都依赖它）。
   inputs.protect_config = body.protect_config;
   if (body.dpt_extra_args) inputs.dpt_extra_args = body.dpt_extra_args;
+  // sign 只在显式请求时下发（workflow 的 input 默认 false = 产物未签名）。
+  // APP 不传此字段 → 行为与之前完全一致。
+  if (body.sign === true) inputs.sign = "true";
   return inputs;
 }
 
