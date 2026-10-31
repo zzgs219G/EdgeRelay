@@ -278,7 +278,8 @@ function checkApkUrlHost(raw: string, env: Env): string | null {
  */
 function buildDispatchInputs(body: BuildRequest): Record<string, string> {
   const inputs: Record<string, string> = {};
-  // protect_config 是永久冻结的 input 键名（apk-protect-action 设计约定）。
+  // protect_config 是永久冻结的 input 键名（沿用 apk-protect-action 时期的设计约定；
+  // 仓库已迁移到 artifact-pipeline，但键名不变 —— workflow yml 与 APP 都依赖它）。
   inputs.protect_config = body.protect_config;
   if (body.dpt_extra_args) inputs.dpt_extra_args = body.dpt_extra_args;
   return inputs;

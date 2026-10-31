@@ -126,13 +126,18 @@ port = 8787
 
 # ── 非密配置 ─────────────────────────────────────────────────────────
 [vars]
-# 触发分支（apk-protect-action 的默认分支）。
+# 触发分支（artifact-pipeline 的默认分支）。
 GITHUB_REF = "main"
 
 # 仓库坐标。放在 [vars] 而非 secret：仓库地址本身不敏感，
 # 敏感的是 GITHUB_TOKEN（wrangler secret put 设置）。
+#
+# ⚠️ 2026-10-31 迁移：原 apk-protect-action（已私有）→ artifact-pipeline（公开）。
+#    迁移原因：公开仓库跑 Actions 免费额度无限，私有仓库只有 2000 分钟/月。
+#    T4 令牌必须重新签发：GITHUB_TOKEN 是 per-repo 授权的，换仓库后旧令牌
+#    没有新仓库权限 → 触发 dispatch 会 404。
 GITHUB_OWNER = "zzgs219G"
-GITHUB_REPO = "apk-protect-action"
+GITHUB_REPO = "artifact-pipeline"
 
 # per-token 令牌桶容量（次/分钟）。APP 轮询 + 后台面板共用。
 # 典型负载：5s 轮询 × 10 分钟/任务 ≈ 120 次，远低于此值。
@@ -207,7 +212,7 @@ R2_PUBLIC_DOMAIN = "https://r2.614118.xyz"
 ENVIRONMENT = "preview"
 GITHUB_REF = "main"
 GITHUB_OWNER = "zzgs219G"
-GITHUB_REPO = "apk-protect-action"
+GITHUB_REPO = "artifact-pipeline"
 RATE_LIMIT_PER_MIN = "120"
 JOB_RETENTION_DAYS = "7"
 RUN_ID_WAIT_MS = "4000"

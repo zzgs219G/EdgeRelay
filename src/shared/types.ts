@@ -171,7 +171,7 @@ export interface Env {
   GITHUB_TOKEN: string;
   /** 仓库 owner，如 zzgs219G。 */
   GITHUB_OWNER: string;
-  /** 仓库名，如 apk-protect-action。 */
+  /** 仓库名，如 artifact-pipeline。 */
   GITHUB_REPO: string;
   /** 触发分支，默认 main。 */
   GITHUB_REF?: string;
