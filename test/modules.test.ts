@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { describeModules, formatModules, invalidateModuleLabelCache } from "../src/modules";
-import type { Env } from "../src/types";
+import { describeModules, formatModules, invalidateModuleLabelCache } from "../src/services/modules";
+import type { Env } from "../src/shared/types";
 
 /**
  * protect_config → 模块中文标签。

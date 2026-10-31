@@ -9,7 +9,7 @@
  * 只在 POST /api/build 时解析一次，不进任何轮询路径。
  */
 
-import type { Env } from "./types";
+import type { Env } from "../shared/types";
 
 /**
  * schema 缓存 1 小时。
@@ -34,7 +34,7 @@ export function invalidateModuleLabelCache(): void {
 /**
  * 从 schema 提取 key → label 映射。
  *
- * schema 结构（apk-protect-action/configs/v{N}/config-schema.json）：
+ * schema 结构（artifact-pipeline/configs/v{N}/config-schema.json）：
  *   { modules: [ { key, label, children?: [ { key, label } ] } ] }
  */
 async function loadLabels(

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { resolveDownloadUrl } from "../src/download_url";
-import { explainDownloadFailure } from "../src/status";
-import type { Env } from "../src/types";
+import { resolveDownloadUrl } from "../src/services/download";
+import { explainDownloadFailure } from "../src/services/download";
+import type { Env } from "../src/shared/types";
 
 /**
  * 产物链接解析：R2 直链优先，artifact 兜底，兜底原因必须可观测。

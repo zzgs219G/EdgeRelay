@@ -97,7 +97,8 @@ fall through 到静态资源；`not_found_handling = "single-page-application"`
 | 文件 | 职责 |
 |---|---|
 | `src/views/Login.vue` | 登录页 |
-| `src/views/Dashboard.vue` | 任务概览 + 任务列表 + 发起构建（默认折叠） |
+| `src/views/Dashboard.vue` | 任务概览 + 任务列表（点击进详情） |
+| `src/views/JobDetail.vue` | 任务详情 + 构建步骤明细（`/api/status/:id/steps`） |
 | `src/views/Config.vue` | 配置页：卡片分组 + 编辑弹窗 |
 | `src/api/index.js` | API 封装，`credentials: same-origin` 带 cookie |
 | `src/stores/index.js` | Pinia：`auth`（登录态）、`job`（任务列表 + 轮询信号） |
@@ -376,7 +377,7 @@ Root directory 留空（仓库根就是根）。
 push 到 main / PR 时跑：
 
 ```
-npm ci → tsc --noEmit → vitest（182 个）→ 前端 build → dist 同步校验
+npm ci → tsc --noEmit → vitest（198 个）→ 前端 build → dist 同步校验
 ```
 
 **只做质量门，不部署**——不需要任何 secret，48 秒跑完。
@@ -553,7 +554,7 @@ GitHub / R2。泄漏后轮换它即可止损。
 # 后端（Termux 上可跑：tsc / vitest 不依赖 workerd）
 npm install --ignore-scripts        # --ignore-scripts 必须加，workerd 无 Android 构建
 npm run typecheck                   # tsc --noEmit
-npm test                            # 182 个测试（node environment）
+npm test                            # 198 个测试（node environment）
 npm run build:frontend              # 构建 Vue 前端
 npx wrangler dev                    # 起本地 Worker（需要 PC，本机跑不了 workerd）
 ```

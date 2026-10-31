@@ -83,6 +83,19 @@ export const api = {
     return request(`/api/jobs?limit=${limit}`)
   },
 
+  /**
+   * 任务步骤明细（GET /api/status/:jobId/steps）。
+   *
+   * 与 /api/status 分开的原因在服务端：那个接口是 APP 每 5 秒轮询的热路径，
+   * 必须只读 KV；步骤明细要打两次 GitHub，只在用户主动展开详情时拉一次。
+   *
+   * 返回 { available, jobs[].steps[], reason }。available=false 时 jobs 为空，
+   * reason 说明原因（如「任务尚未关联到流水线运行」），不是错误。
+   */
+  statusSteps(jobId) {
+    return request(`/api/status/${encodeURIComponent(jobId)}/steps`)
+  },
+
   /** 运行时配置。敏感字段返回明文 + 掩码（掩码仅供摘要卡片展示）。 */
   getConfig() {
     return request('/api/config')

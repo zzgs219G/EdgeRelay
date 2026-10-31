@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import worker from "../src/router";
-import { invalidateJobsCache } from "../src/jobs";
-import type { Env } from "../src/types";
+import { invalidateJobsCache } from "../src/services/job_list_cache";
+import type { Env } from "../src/shared/types";
 import {
   buildSessionCookie,
   readCookie,
   SESSION_COOKIE_NAME,
   verifySessionCookie,
-} from "../src/ui";
+} from "../src/services/session";
 
 /**
  * 登录 / 会话 / 根路径行为。

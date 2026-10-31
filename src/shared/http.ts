@@ -1,8 +1,8 @@
 /**
  * 共享 HTTP 工具：JSON 响应、错误响应、CORS 头、常量时间比较。
  *
- * 单独成文件是为了打断循环依赖：router.ts 要 import config_api.ts 的
- * handler，而 config_api.ts 又需要 json()。若 json() 留在 router.ts 里
+ * 单独成文件是为了打断循环依赖：router.ts 要 import routes/config.ts 的
+ * handler，而那个 handler 又需要 json()。若 json() 留在 router.ts 里
  * 就成了环。
  */
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildPresignedUrl, handlePresign, validatePresignKey } from "../src/r2_presign";
+import { buildPresignedUrl, validatePresignKey } from "../src/services/sigv4";
+import { handlePresign } from "../src/routes/r2_presign";
 
 /**
  * SigV4 预签名算法正确性。

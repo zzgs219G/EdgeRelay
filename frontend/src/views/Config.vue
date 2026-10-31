@@ -273,10 +273,10 @@ const CARDS = [
     fields: [
       {
         key: 'github_token', label: 'Token', secret: true, placeholder: 'ghp_...',
-        hint: '需要 apk-protect-action 的 Actions: Read & Write 权限',
+        hint: '需要 artifact-pipeline 的 Actions: Read & Write 权限',
       },
       { key: 'github_owner', label: 'Owner', placeholder: 'zzgs219G' },
-      { key: 'github_repo', label: '仓库名', placeholder: 'apk-protect-action' },
+      { key: 'github_repo', label: '仓库名', placeholder: 'artifact-pipeline' },
       { key: 'github_ref', label: '分支', placeholder: 'main', optional: true },
     ],
   },

@@ -10,14 +10,23 @@
  * 做无谓的字段映射。
  */
 
-import type { BuildJob, Env } from "./types";
-import { getJob } from "./kv_store";
-import { getRunSteps } from "./github";
-import { error, json } from "./http";
+import type { Env } from "../shared/types";
+import { getJob } from "../services/kv";
+import { getRunSteps } from "../services/github";
+import { canAccessJob, type Principal } from "../services/principal";
+import { error, json } from "../shared/http";
 
-export async function handleStatusSteps(env: Env, jobId: string): Promise<Response> {
+export async function handleStatusSteps(
+  env: Env,
+  jobId: string,
+  principal: Principal,
+): Promise<Response> {
   const job = await getJob(env, jobId);
   if (!job) {
+    return error(404, "not_found", `任务 ${jobId} 不存在或已过期`);
+  }
+  // 归属校验：他人的任务按"不存在"处理，不泄漏存在性。
+  if (!canAccessJob(principal, job.owner)) {
     return error(404, "not_found", `任务 ${jobId} 不存在或已过期`);
   }
   if (job.run_id === null) {
@@ -26,7 +35,8 @@ export async function handleStatusSteps(env: Env, jobId: string): Promise<Respon
     return json({
       job_id: job.job_id,
       status: job.status,
-      app_status: job.conclusion === "success" ? "SUCCESS" : job.status === "queued" ? "PENDING" : "PROCESSING",
+      app_status:
+        job.conclusion === "success" ? "SUCCESS" : job.status === "queued" ? "PENDING" : "PROCESSING",
       available: false,
       jobs: [],
       reason: "任务尚未关联到流水线运行",
@@ -58,6 +68,3 @@ export async function handleStatusSteps(env: Env, jobId: string): Promise<Respon
     );
   }
 }
-
-/** 供测试与内部复用。 */
-export type { BuildJob };
