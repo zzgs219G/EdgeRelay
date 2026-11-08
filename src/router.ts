@@ -20,6 +20,7 @@ import { healthCheck } from "./middleware/health";
 import { error, json, withCors } from "./shared/http";
 
 import { handleBuild } from "./routes/build";
+import { handleBuildLookup } from "./routes/build_lookup";
 import { handleStatus } from "./routes/status";
 import { handleStatusSteps } from "./routes/status_steps";
 import { handleWorkflows } from "./routes/workflows";
@@ -113,6 +114,14 @@ export default {
 
         case url.pathname === "/api/build" && request.method === "POST":
           return await handleBuild(request, cfg, ctx, principal);
+
+        // 用幂等键反查 job_id。必须排在 /api/build 之后（那个是精确匹配，
+        // 不会误吞），且只认 /api/build/idem/ 前缀，避免把别的子路径吃掉。
+        case url.pathname.startsWith("/api/build/idem/") && request.method === "GET": {
+          const id = decodeURIComponent(url.pathname.slice("/api/build/idem/".length));
+          if (!id) return error(400, "bad_request", "缺少 clientRequestId");
+          return await handleBuildLookup(cfg, id, principal);
+        }
 
         // 日志下载：代理 GitHub artifact（带令牌取回后转发给面板）
         case url.pathname.startsWith("/api/log/") && request.method === "GET": {

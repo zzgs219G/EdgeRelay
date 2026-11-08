@@ -4,6 +4,7 @@
  *   jobs.ts       — 单条任务的增删改查
  *   signal.ts     — 未完结任务信号灯（省 list 额度）
  *   job_index.ts  — job_id 索引（面板读它替代 list）
+ *   idem.ts       — 提交幂等映射（client_request_id → job_id）
  *
  * 调用方从本文件导入即可。本文件只做 re-export，不含逻辑。
  */
@@ -35,3 +36,9 @@ export {
   rebuildJobIds,
   shouldAttemptIndexRebuild,
 } from "./job_index";
+export {
+  bindClientRequestId,
+  getJobIdByClientRequestId,
+  IDEM_TTL_SECONDS,
+  normalizeClientRequestId,
+} from "./idem";

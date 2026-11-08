@@ -87,6 +87,15 @@ export interface BuildJob {
   updated_at_ms: number;
   /** 已尝试过的 run_id 候选（补绑时去重用）。 */
   run_id_candidates?: number[];
+  /**
+   * 调用方生成的幂等键（见 BuildRequest.client_request_id）。
+   *
+   * 落在任务记录里的用途：`GET /api/build/idem/<id>` 命中映射后，要用它
+   * 确认「这条 job 确实属于这个 client_request_id」（映射与记录双写，
+   * 任一侧异常都不至于把别人的任务交出去）。
+   * 老任务没有这个字段。
+   */
+  client_request_id?: string;
 }
 
 export type JobStatus = "queued" | "in_progress" | "completed";
@@ -139,6 +148,21 @@ export interface BuildRequest {
   protect_config: string;
   dpt_extra_args?: string;
   display_name?: string;
+  /**
+   * 调用方生成的幂等键（建议 UUID）。
+   *
+   * 为什么需要：`POST /api/build` 的响应超时不代表服务端没执行——网关是
+   * 「先落库、再 dispatch」，超时完全可能发生在两者之后。没有这个字段时，
+   * 一次超时就会产生一个「网关有任务、APP 无 job_id」的孤儿任务，APP 侧
+   * 永远显示失败（详见 services/kv/idem.ts 的说明）。
+   *
+   * 带上之后：
+   *   - 客户端可以安全地重试（同 ID 不重复 dispatch）
+   *   - 客户端可以事后用 `GET /api/build/idem/<id>` 精确查回 job_id
+   *
+   * 可选：老版本 APP 不传，行为与之前完全一致。
+   */
+  client_request_id?: string;
   /**
    * 是否请求流水线用仓库 Secrets 里的 keystore 重签产物。
    *

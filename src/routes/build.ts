@@ -17,6 +17,7 @@ import type { BuildJob, BuildRequest, BuildResponse, Env } from "../shared/types
 import { newJobId } from "../domain/job";
 import { describeGitHubError, dispatchWorkflow, GitHubError, listRecentRuns } from "../services/github";
 import { putJob, putNewJob } from "../services/kv";
+import { bindClientRequestId, getJob, getJobIdByClientRequestId, normalizeClientRequestId } from "../services/kv";
 import { describeModules } from "../services/modules";
 import { invalidateJobsCache } from "../services/job_list_cache";
 import type { Principal } from "../services/principal";
@@ -53,6 +54,47 @@ export async function handleBuild(
     return error(400, "bad_request", problems.join("；"));
   }
 
+  // ── 幂等短路：同一次提交的重试直接拿回原 job_id ──
+  //
+  // 这是「超时后不产生孤儿任务」的核心。网关的顺序是「先落库、再 dispatch」，
+  // 所以客户端超时完全可能发生在任务建成之后——旧版 APP 因此永远拿不到
+  // job_id，只能把本地任务标 FAILED，而 GitHub 那边其实已经跑完了。
+  //
+  // 命中即原样返回，**绝不重新 dispatch**：重复 dispatch 会让同一个 APK
+  // 被加固两遍，产出两个任务、两份产物、双倍 Actions 分钟数。
+  //
+  // 响应里的 status 用任务记录的真实状态（可能是 queued，也可能已经被
+  // cron/status 回查推进到 in_progress），调用方按既有逻辑处理即可。
+  const clientRequestId = normalizeClientRequestId(body.client_request_id);
+  if (body.client_request_id && clientRequestId === null) {
+    return error(400, "bad_request", "client_request_id 格式非法（允许 A-Z a-z 0-9 . _ - ，长度 8~64）");
+  }
+  if (clientRequestId) {
+    const existingJobId = await getJobIdByClientRequestId(env, principal.id, clientRequestId);
+    if (existingJobId) {
+      const existing = await getJob(env, existingJobId);
+      if (existing) {
+        console.log("build idempotent hit", {
+          client_request_id: clientRequestId,
+          job_id: existingJobId,
+        });
+        const resp: BuildResponse = {
+          success: true,
+          job_id: existingJobId,
+          status: existing.status,
+        };
+        return json(resp, 200);
+      }
+      // 映射存在但任务记录读不到：可能任务已过 TTL 被清、或映射残留。
+      // 不能直接返回这个 job_id（调用方去查状态会 404），落到下面新建。
+      // 这也意味着旧映射会被新任务覆盖——正确的自愈方向。
+      console.error("idem mapping points to missing job", {
+        client_request_id: clientRequestId,
+        job_id: existingJobId,
+      });
+    }
+  }
+
   // 同一个 now 同时用于 job_id 的时间前缀与 created_at_ms。
   // 若分两次 Date.now()，极端情况下会差 1ms，导致 KV 字典序与
   // created_at_ms 排序不完全一致（列表顺序细微错乱）。
@@ -75,12 +117,26 @@ export async function handleBuild(
     error: null,
     created_at_ms: now,
     updated_at_ms: now,
+    ...(clientRequestId ? { client_request_id: clientRequestId } : {}),
   };
 
   // 先落库再触发：dispatch 失败也能在任务表里留下痕迹，便于排查。
   // 用 putNewJob 而非 putJob：它是唯一「新建任务」的语义入口，
   // 顺带把未完结信号灯 +1（详见 services/kv/jobs.ts）。
   await putNewJob(env, job);
+
+  // ⚠️ 幂等映射必须在 dispatch 之前写。
+  //
+  // 在这两行之间到达的重试请求，会读到映射并直接返回同一个 jobId；
+  // 若把 bind 挪到 dispatch 之后（或放进 waitUntil），这段窗口里的重试
+  // 读不到映射 → 重复 dispatch → 两个任务、两次加固，正是本机制要防的。
+  //
+  // 顺序之所以安全：映射里存的 jobId 对应的任务此刻已经落库（上一行），
+  // 所以拿到 jobId 的调用方去 /api/status 一定能查到它，不会出现
+  // 「映射有效但任务不存在」的悬空指针。
+  if (clientRequestId) {
+    await bindClientRequestId(env, principal.id, clientRequestId, jobId);
+  }
   // 让面板立刻看到新任务，而不是等列表缓存（15s）过期。
   invalidateJobsCache();
 
