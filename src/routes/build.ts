@@ -15,7 +15,7 @@
 
 import type { BuildJob, BuildRequest, BuildResponse, Env } from "../shared/types";
 import { newJobId } from "../domain/job";
-import { describeGitHubError, dispatchWorkflow, GitHubError, listRecentRuns } from "../services/github";
+import { describeGitHubError, dispatchWorkflow, fetchWorkflowInputs, GitHubError, listRecentRuns } from "../services/github";
 import { putJob, putNewJob } from "../services/kv";
 import { bindClientRequestId, getJob, getJobIdByClientRequestId, normalizeClientRequestId } from "../services/kv";
 import { describeModules } from "../services/modules";
@@ -140,7 +140,18 @@ export async function handleBuild(
   // 让面板立刻看到新任务，而不是等列表缓存（15s）过期。
   invalidateJobsCache();
 
-  const inputs = buildDispatchInputs(body);
+  // 向 workflow 自己问「你声明了哪些 input」——见 buildDispatchInputs 的说明。
+  // 读取失败不阻塞构建：退回「只传历史三字段」，与本次重构之前一致。
+  // 加固本身跟 input 声明无关，失败面必须限定在「可选参数传不进去」。
+  let declared: Set<string> | null = null;
+  try {
+    const metas = await fetchWorkflowInputs(env, body.workflow_file);
+    declared = new Set(metas.map((m) => m.name));
+  } catch (err) {
+    console.warn(`[build] 读取 workflow inputs 失败，退回历史字段: ${String(err)}`);
+  }
+
+  const inputs = buildDispatchInputs(body, declared);
   try {
     await dispatchWorkflow(env, {
       workflowFile: body.workflow_file,
@@ -328,62 +339,100 @@ function checkApkUrlHost(raw: string, env: Env): string | null {
 
   return null;
 }
-
 /**
  * 组装除 apk_url 之外的 workflow inputs。
+ *
+ * @param declared workflow yml 里 `on.workflow_dispatch.inputs` 声明的键集合。
+ *                 `null` = 没拿到声明（上游读取失败），此时只转发三个历史
+ *                 字段，行为退回本次重构之前 —— 宁可少传可选项，也不要
+ *                 因为一次 404 把整条构建打死。
+ *
+ * ## 为什么不是「逐字段硬编码」
+ *
+ * 原实现只认 protect_config / dpt_extra_args / sign 三个，workflow 每加
+ * 一个 input 都要同步改这里，否则该字段被**静默丢弃**：不报错、不警告，
+ * 上游以为传了、workflow 收到的是默认值。实测踩过 —— trigger_build.py 传
+ * no_lock=true，workflow 里仍是 0，排查了半天。
+ *
+ * ## 为什么也不是「全量透传」
+ *
+ * 曾试过遍历 body 全量转发，结果 `display_name`（网关自己的任务显示名，
+ * 从来不是 workflow input）被一起发给 GitHub：
+ *
+ *     HTTP 422: Unexpected inputs provided: ["display_name"]
+ *
+ * 而且失败发生在 dispatch 阶段，任务早已落库，用户看到的是
+ * 「流水线参数不匹配」这种跟真实原因无关的提示。
+ *
+ * ## 现在的做法：向 workflow 自己问「你有哪些 input」
+ *
+ * `fetchWorkflowInputs()` 读 `.github/workflows/<file>` 的 yml 原文解析
+ * `workflow_dispatch.inputs`，同一函数早已用于新建任务页的表单渲染。
+ * 用它做准入清单，等于把 workflow yml 当作唯一真相源：
+ *
+ *   · workflow 新增 input → 这里自动认识，**不用改网关**
+ *   · 网关自用字段（display_name 等）不在 yml 里 → 天然被排除
+ *   · 拼错/忘了声明的键名 → 不在 yml 里 → 排除并留痕（不静默）
+ *
+ * 历史注意：本项目过去的「新参数」几乎都塞在 protect_config 这个 JSON
+ * 字符串里（网关对它内容无感知），所以从未撞上这个限制。no_lock 是
+ * 第一个做成独立 workflow input 的参数，才把问题暴露出来。
  */
-function buildDispatchInputs(body: BuildRequest): Record<string, string> {
+function buildDispatchInputs(
+  body: BuildRequest,
+  declared: ReadonlySet<string> | null,
+): Record<string, string> {
   const inputs: Record<string, string> = {};
 
-  // ── 全量透传 + GitHub 兜底校验（2026-11-13 重构）────────────────────
-  //
-  // 原实现【逐字段硬编码】三个 input（protect_config / dpt_extra_args /
-  // sign），加新 input 时必须同步改这里，否则该字段被**静默丢弃** ——
-  // 不报错、不警告，上游以为传了、workflow 收到的是默认值。
-  // 实测踩过：trigger_build.py 传 no_lock=true，workflow 里仍是 0。
-  //
-  // 为什么要全量透传而不是白名单：
-  //   白名单只是把「改网关」变成「改白名单」，新增参数还得动网关源码，
-  //   问题没解决只是挪了个位置。
-  //
-  // 为什么全量透传是安全的 —— **GitHub 自己会拒绝未声明的 input**：
-  //   $ gh workflow run ... -f this_input_does_not_exist=1
-  //   → HTTP 422: Unexpected inputs provided: ["this_input_does_not_exist"]
-  //   所以转发垃圾字段不会造成任何副作用，只是让那次 dispatch 失败，
-  //   而那正是调用方该看到的错误（fail-fast，不静默）。
-  //
-  // 唯一的例外是 apk_url —— 它不在这里转，由 validateApkUrl() 单独处理
-  // （防 SSRF）。workflow_file 也只用于选 workflow，不是 input。
-  //
-  // ⚠️ 仍然过滤的：
-  //   · 非标量（对象/数组）—— workflow input 只能是 string
-  //   · 值为 undefined/null —— 不传比传空串更符合"未指定"语义
-  //   · apk_url / workflow_file / client_request_id —— 网关自用字段
+  // ── 历史三字段：行为逐字节保持不变 ────────────────────────────────
+  // protect_config 是永久冻结的 input 键名（沿用 apk-protect-action 时期
+  // 的设计约定；仓库已迁移到 artifact-pipeline，但键名不变 —— workflow
+  // yml 与 APP 都依赖它）。
+  inputs.protect_config = body.protect_config;
+  if (body.dpt_extra_args) inputs.dpt_extra_args = body.dpt_extra_args;
+  // sign 只在显式请求时下发（workflow 的 input 默认 false = 产物未签名）。
+  // APP 不传此字段 → 行为与之前完全一致。
+  if (body.sign === true) inputs.sign = "true";
 
+  // ── 其余字段：只转发 workflow 声明过的 ────────────────────────────
   /** 网关自己消费、不作为 workflow input 转发的键 */
   const NOT_INPUTS = new Set([
     "apk_url",           // 由 validateApkUrl() 校验后单独传
     "workflow_file",     // 用于选 workflow，不是 input
     "client_request_id", // 幂等键，网关自用
+    "display_name",      // 任务列表展示名，存 KV，不进 workflow
   ]);
+
+  /**
+   * 历史三字段已在上面按各自的语义处理完，这里一律跳过。
+   *
+   * 为什么不能只判断 `key in inputs`：sign=false 时上面**故意没写入**
+   * inputs（保持「不下发 sign」的原语义），若只判断 key in inputs，
+   * 循环会把它补成 inputs.sign = "false" —— 等于悄悄改掉了历史行为，
+   * 让 workflow 的 input 默认值失效。
+   */
+  const HANDLED = new Set(["protect_config", "dpt_extra_args", "sign"]);
 
   const raw = body as unknown as Record<string, unknown>;
   for (const [key, value] of Object.entries(raw)) {
+    if (HANDLED.has(key)) continue;       // 历史三字段已处理
     if (NOT_INPUTS.has(key)) continue;
     if (value === undefined || value === null) continue;
 
-    if (typeof value === "boolean") {
-      inputs[key] = value ? "true" : "false";
-    } else if (typeof value === "string") {
-      // 空串也转发 —— sign=false 与"未指定"在 workflow 侧语义不同时，
-      // 由 workflow 自己的 default 决定；这里不替它做决定。
-      inputs[key] = value;
-    } else if (typeof value === "number") {
-      inputs[key] = String(value);
-    } else {
-      // 对象/数组：workflow input 不支持，跳过并留痕（不静默）
+    // 非标量先拦：workflow input 只能是 string
+    if (typeof value === "object") {
       console.warn(`[build] 跳过非标量 input: ${key} (${typeof value})`);
+      continue;
     }
+
+    if (declared === null) continue;      // 拿不到声明 → 只走历史三字段
+    if (!declared.has(key)) {
+      // 不静默：调用方拼错键名、或 workflow 忘了声明时，这是唯一的线索。
+      console.warn(`[build] 跳过 workflow 未声明的 input: ${key}`);
+      continue;
+    }
+
+    inputs[key] = typeof value === "boolean" ? (value ? "true" : "false") : String(value);
   }
 
   return inputs;

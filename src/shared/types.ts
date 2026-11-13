@@ -175,25 +175,27 @@ export interface BuildRequest {
   sign?: boolean;
 
   /**
-   * 【透传通道】其余字段原样转给 workflow 的 input（2026-11-13）。
+   * 【额外 input 通道】workflow 里声明的其余 input（2026-11-13）。
    *
    * 为什么需要：网关原先逐字段硬编码（protect_config / dpt_extra_args /
    * sign 三个），workflow 每加一个 input 都要改网关源码，否则该字段被
    * **静默丢弃** —— 实测 no_lock 就这样被吃掉，查了很久才发现。
    *
-   * 现在改为全量透传：请求体里除 apk_url / workflow_file /
-   * client_request_id（网关自用）之外的标量字段，一律作为 workflow
-   * input 转发。
+   * 现在的规则：**workflow yml 里声明了，就能透传。**
+   * `buildDispatchInputs()` 用 `fetchWorkflowInputs()` 解析
+   * `on.workflow_dispatch.inputs` 做准入清单，所以：
    *
-   * 安全性由 GitHub 保证：**未声明的 input 会让 dispatch 直接失败**
-   * （HTTP 422 "Unexpected inputs provided"），所以转发垃圾字段不会
-   * 有任何副作用，只是那次触发失败 —— 而这正是调用方该看到的错误。
-   *
-   * 用法：workflow 里新加一个 `my_flag` input，直接传 `my_flag: true`
-   * 即可，**不需要改网关**。
+   *   · workflow 新增 input（如 `no_lock`、`amice_probe`）→ 直接传，
+   *     **不需要改网关**
+   *   · 网关自用字段（apk_url / workflow_file / client_request_id /
+   *     display_name）永远不转发，即使传了也忽略
+   *   · 未声明的键被排除并打 warn（不静默 —— 曾经静默丢弃是排查噩梦）
    *
    * ⚠️ 只支持标量（string / number / boolean）—— 对象和数组会被跳过
-   *    并打一条 warn（workflow input 不支持复合类型）。
+   *    并打 warn（workflow input 不支持复合类型）。
+   *
+   * ⚠️ 注意这里用的是索引签名，意味着**任何键都能写进来而不报错**。
+   *    真正生效与否由 workflow yml 决定，不由类型系统保证。
    */
   [extraInput: string]: unknown;
 }
