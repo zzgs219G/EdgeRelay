@@ -103,6 +103,43 @@ on:
     expect(inputs.map((i) => i.name)).toEqual(["only_one"]);
   });
 
+  it("parses inputs when workflow_dispatch comes AFTER other triggers", () => {
+    // 真实场景：artifact-pipeline 的 protect-modules.yml 就是 push /
+    // pull_request 排在 workflow_dispatch 之前。
+    //
+    // 原实现在遇到 push: 时就把 inDispatch 置 false，导致后面的
+    // workflow_dispatch 永远解析不到 → inputs 静默变成 []。
+    // 后果不只是表单渲染为空：build 路由拿它做 input 准入清单，
+    // 于是 sign / no_lock / amice_probe 全被过滤掉，表现为
+    // 「参数传了但 workflow 收到默认值」，极难排查。
+    const pushFirst = `
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/**'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      apk_url:
+        description: 'APK链接'
+        required: true
+      no_lock:
+        description: '跳过锁箱'
+        required: false
+        type: boolean
+        default: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+`;
+    const inputs = parseDispatchInputs(pushFirst);
+    expect(inputs.map((i) => i.name)).toEqual(["apk_url", "no_lock"]);
+    expect(inputs[1].type).toBe("boolean");
+    expect(inputs[1].default).toBe("false");
+  });
+
   it("returns empty for a workflow without inputs", () => {
     const noInputs = `
 on:

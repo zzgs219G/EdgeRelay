@@ -76,6 +76,8 @@ export async function fetchWorkflowInputs(
 export function parseDispatchInputs(yml: string): WorkflowInputMeta[] {
   const inputs: WorkflowInputMeta[] = [];
   let inDispatch = false;
+  /** 是否正处在某个具体触发事件块内（push/pull_request/workflow_dispatch…） */
+  let inDispatchBlock = false;
   let inInputs = false;
   let curName: string | null = null;
   let curDesc = "";
@@ -114,17 +116,14 @@ export function parseDispatchInputs(yml: string): WorkflowInputMeta[] {
     if (indent === 0 && (trimmed === "on:" || trimmed.startsWith("on:"))) {
       flush();
       inDispatch = true;
+      inDispatchBlock = false;
       inInputs = false;
       continue;
     }
     if (indent === 0) {
       flush();
       inDispatch = false;
-      inInputs = false;
-      continue;
-    }
-    if (inDispatch && trimmed === "workflow_dispatch:") {
-      flush();
+      inDispatchBlock = false;
       inInputs = false;
       continue;
     }
@@ -133,15 +132,34 @@ export function parseDispatchInputs(yml: string): WorkflowInputMeta[] {
       inInputs = true;
       continue;
     }
-    if (
-      inDispatch &&
-      !inInputs &&
-      indent >= 2 &&
-      indent <= 4 &&
-      trimmed !== "workflow_dispatch:" &&
-      /^[a-z_]+:/.test(trimmed)
-    ) {
-      inDispatch = false;
+    // `on:` 下可能有多个触发事件（push / pull_request / workflow_dispatch…），
+    // 顺序任意。原实现在遇到【任何】其它事件时就 inDispatch = false，
+    // 于是 workflow_dispatch 排在 push 之后（本仓库就是这样）时**永远
+    // 解析不到**，inputs 静默变成空数组。
+    //
+    // 后果：新建任务页表单渲染为空（可容忍），但 build 路由用它做 input
+    // 准入清单 → 所有可选参数（sign / no_lock / amice_probe）全被过滤掉，
+    // 且只在 console 里留一条 warn，表现为「传了参数但 workflow 收到默认值」。
+    //
+    // 正确做法：只跳过【当前这个兄弟事件块】的其余内容，遇到
+    // workflow_dispatch 仍然要能进入。用 inDispatch 表示「仍在 on: 块内」，
+    // 用 inDispatchBlock 表示「正处在某个具体事件块内」。
+    if (inDispatch && !inInputs && indent <= 4 && /^[a-z_]+:/.test(trimmed)) {
+      if (trimmed === "workflow_dispatch:") {
+        // 事件块切换：清掉上一个块的残留状态，下一行的 inputs: 才认得
+        flush();
+        inDispatchBlock = true;
+        continue;
+      }
+      if (indent === 2) {
+        // 这是另一个事件（push:/pull_request:/...）的标题行
+        flush();
+        inDispatchBlock = false;
+        continue;
+      }
+    }
+    if (inDispatch && inDispatchBlock && !inInputs && indent > 2) {
+      // 其它事件块的内部行（branches / paths / …）—— 忽略，但不离开 on: 块
       continue;
     }
     if (inInputs && indent === 6 && trimmed.endsWith(":")) {

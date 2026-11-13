@@ -152,8 +152,6 @@ export async function handleBuild(
   }
 
   const inputs = buildDispatchInputs(body, declared);
-  // TEMP-DIAG: 排查 no_lock 为何到不了 workflow
-  console.log(`[DIAG] declared=${declared ? [...declared].join(",") : "null"} inputs=${JSON.stringify(inputs)}`);
   try {
     await dispatchWorkflow(env, {
       workflowFile: body.workflow_file,
