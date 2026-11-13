@@ -173,6 +173,29 @@ export interface BuildRequest {
    *    原证书指纹，换证书重签 → 运行期证书派生失败 → 包起不来。
    */
   sign?: boolean;
+
+  /**
+   * 【透传通道】其余字段原样转给 workflow 的 input（2026-11-13）。
+   *
+   * 为什么需要：网关原先逐字段硬编码（protect_config / dpt_extra_args /
+   * sign 三个），workflow 每加一个 input 都要改网关源码，否则该字段被
+   * **静默丢弃** —— 实测 no_lock 就这样被吃掉，查了很久才发现。
+   *
+   * 现在改为全量透传：请求体里除 apk_url / workflow_file /
+   * client_request_id（网关自用）之外的标量字段，一律作为 workflow
+   * input 转发。
+   *
+   * 安全性由 GitHub 保证：**未声明的 input 会让 dispatch 直接失败**
+   * （HTTP 422 "Unexpected inputs provided"），所以转发垃圾字段不会
+   * 有任何副作用，只是那次触发失败 —— 而这正是调用方该看到的错误。
+   *
+   * 用法：workflow 里新加一个 `my_flag` input，直接传 `my_flag: true`
+   * 即可，**不需要改网关**。
+   *
+   * ⚠️ 只支持标量（string / number / boolean）—— 对象和数组会被跳过
+   *    并打一条 warn（workflow input 不支持复合类型）。
+   */
+  [extraInput: string]: unknown;
 }
 
 /** POST /api/build 的响应体。 */

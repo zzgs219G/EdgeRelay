@@ -334,13 +334,58 @@ function checkApkUrlHost(raw: string, env: Env): string | null {
  */
 function buildDispatchInputs(body: BuildRequest): Record<string, string> {
   const inputs: Record<string, string> = {};
-  // protect_config 是永久冻结的 input 键名（沿用 apk-protect-action 时期的设计约定；
-  // 仓库已迁移到 artifact-pipeline，但键名不变 —— workflow yml 与 APP 都依赖它）。
-  inputs.protect_config = body.protect_config;
-  if (body.dpt_extra_args) inputs.dpt_extra_args = body.dpt_extra_args;
-  // sign 只在显式请求时下发（workflow 的 input 默认 false = 产物未签名）。
-  // APP 不传此字段 → 行为与之前完全一致。
-  if (body.sign === true) inputs.sign = "true";
+
+  // ── 全量透传 + GitHub 兜底校验（2026-11-13 重构）────────────────────
+  //
+  // 原实现【逐字段硬编码】三个 input（protect_config / dpt_extra_args /
+  // sign），加新 input 时必须同步改这里，否则该字段被**静默丢弃** ——
+  // 不报错、不警告，上游以为传了、workflow 收到的是默认值。
+  // 实测踩过：trigger_build.py 传 no_lock=true，workflow 里仍是 0。
+  //
+  // 为什么要全量透传而不是白名单：
+  //   白名单只是把「改网关」变成「改白名单」，新增参数还得动网关源码，
+  //   问题没解决只是挪了个位置。
+  //
+  // 为什么全量透传是安全的 —— **GitHub 自己会拒绝未声明的 input**：
+  //   $ gh workflow run ... -f this_input_does_not_exist=1
+  //   → HTTP 422: Unexpected inputs provided: ["this_input_does_not_exist"]
+  //   所以转发垃圾字段不会造成任何副作用，只是让那次 dispatch 失败，
+  //   而那正是调用方该看到的错误（fail-fast，不静默）。
+  //
+  // 唯一的例外是 apk_url —— 它不在这里转，由 validateApkUrl() 单独处理
+  // （防 SSRF）。workflow_file 也只用于选 workflow，不是 input。
+  //
+  // ⚠️ 仍然过滤的：
+  //   · 非标量（对象/数组）—— workflow input 只能是 string
+  //   · 值为 undefined/null —— 不传比传空串更符合"未指定"语义
+  //   · apk_url / workflow_file / client_request_id —— 网关自用字段
+
+  /** 网关自己消费、不作为 workflow input 转发的键 */
+  const NOT_INPUTS = new Set([
+    "apk_url",           // 由 validateApkUrl() 校验后单独传
+    "workflow_file",     // 用于选 workflow，不是 input
+    "client_request_id", // 幂等键，网关自用
+  ]);
+
+  const raw = body as unknown as Record<string, unknown>;
+  for (const [key, value] of Object.entries(raw)) {
+    if (NOT_INPUTS.has(key)) continue;
+    if (value === undefined || value === null) continue;
+
+    if (typeof value === "boolean") {
+      inputs[key] = value ? "true" : "false";
+    } else if (typeof value === "string") {
+      // 空串也转发 —— sign=false 与"未指定"在 workflow 侧语义不同时，
+      // 由 workflow 自己的 default 决定；这里不替它做决定。
+      inputs[key] = value;
+    } else if (typeof value === "number") {
+      inputs[key] = String(value);
+    } else {
+      // 对象/数组：workflow input 不支持，跳过并留痕（不静默）
+      console.warn(`[build] 跳过非标量 input: ${key} (${typeof value})`);
+    }
+  }
+
   return inputs;
 }
 
@@ -441,3 +486,12 @@ function validateBuildRequest(body: BuildRequest, env: Env): string[] {
   }
   return problems;
 }
+
+/**
+ * 测试专用薄包装 —— 把内部函数暴露给单测，不改变生产行为。
+ *
+ * 为什么不在函数本身上加 export：buildDispatchInputs 是路由内部实现细节，
+ * 直接 export 会让它成为对外 API 的一部分（有人可能绕过路由直接调）。
+ * 这里只在测试文件里用，且**不参与任何路由**。
+ */
+export const buildDispatchInputsForTest = buildDispatchInputs;
